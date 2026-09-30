@@ -1,0 +1,839 @@
+import {
+  useEffect,
+  useState,
+} from 'react'
+
+import {
+  ChevronDown,
+  MessageCircle,
+  Send,
+  X,
+} from 'lucide-react'
+
+import {
+  getEvents,
+  type ApiEvent,
+} from './lib/api'
+
+import {
+  sendInteraction,
+} from './lib/interactions'
+
+import {
+  createComment,
+  getComments,
+  type ApiComment,
+} from './lib/comments'
+
+import {
+  getCategories,
+  getProfileInterests,
+  saveProfileInterests,
+  type ApiCategory,
+} from './lib/profile'
+
+import {
+  EventSlide,
+} from './components/EventSlide'
+
+import {
+  Onboarding,
+} from './components/Onboarding'
+
+import {
+  CategorySheet,
+} from './components/CategorySheet'
+
+
+
+function App() {
+  const [events, setEvents] =
+    useState<ApiEvent[]>([])
+
+  const [categories, setCategories] =
+    useState<ApiCategory[]>([])
+  const [
+    preferredCategories,
+    setPreferredCategories,
+  ] = useState<string[]>([])
+
+  const [
+    activeCategory,
+    setActiveCategory,
+  ] = useState<string | null>(
+    null,
+  )
+
+  const [
+    feedLoading,
+    setFeedLoading,
+  ] = useState(false)
+
+  const [
+    categoriesOpen,
+    setCategoriesOpen,
+  ] = useState(false)
+
+  const [
+    nearbyActive,
+    setNearbyActive,
+  ] = useState(false)
+
+  const [
+    locationError,
+    setLocationError,
+  ] = useState<string | null>(null)
+
+  const [
+    onboardingCompleted,
+    setOnboardingCompleted,
+  ] = useState<boolean | null>(null)
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [liked, setLiked] =
+    useState<
+      Record<string, boolean>
+    >({})
+
+  const [comments, setComments] =
+    useState<
+      Record<string, ApiComment[]>
+    >({})
+
+  const [
+    commentsEvent,
+    setCommentsEvent,
+  ] = useState<ApiEvent | null>(
+    null,
+  )
+
+  const [
+    commentText,
+    setCommentText,
+  ] = useState('')
+
+  const [
+    commentsLoading,
+    setCommentsLoading,
+  ] = useState(false)
+
+  const [
+    commentSending,
+    setCommentSending,
+  ] = useState(false)
+
+  const [
+    commentError,
+    setCommentError,
+  ] = useState<string | null>(
+    null,
+  )
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const [
+          profile,
+          categoryItems,
+        ] = await Promise.all([
+          getProfileInterests(),
+          getCategories(),
+        ])
+
+        setPreferredCategories(
+          profile.categories.map(
+            (category) =>
+              category.slug,
+          ),
+        )
+
+        setCategories(
+          categoryItems,
+        )
+
+        setOnboardingCompleted(
+          profile.onboardingCompleted,
+        )
+
+        if (
+          profile.onboardingCompleted
+        ) {
+          const feed =
+            await getEvents(20)
+
+          setEvents(feed.items)
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void initialize()
+  }, [])
+
+  async function completeOnboarding(
+    selected: string[],
+  ) {
+    await saveProfileInterests(
+      selected,
+    )
+
+    setOnboardingCompleted(true)
+
+    const feed =
+      await getEvents(20)
+
+    setEvents(feed.items)
+  }
+
+  async function switchCategory(
+    category: string | null,
+  ) {
+    if (
+      category === activeCategory &&
+      !nearbyActive
+    ) {
+      return
+    }
+
+    setNearbyActive(false)
+    setLocationError(null)
+
+    setActiveCategory(category)
+    setFeedLoading(true)
+
+    try {
+      const feed =
+        await getEvents(
+          20,
+          category ??
+            undefined,
+        )
+
+      setEvents(feed.items)
+
+      // После смены категории
+      // возвращаем ленту наверх.
+      requestAnimationFrame(
+        () => {
+          document
+            .querySelector(
+              '.tiktok-feed',
+            )
+            ?.scrollTo({
+              top: 0,
+            })
+        },
+      )
+    } finally {
+      setFeedLoading(false)
+    }
+  }
+
+  async function openNearby() {
+    setLocationError(null)
+
+    if (!navigator.geolocation) {
+      setLocationError(
+        '\u0413\u0435\u043e\u043b\u043e\u043a\u0430\u0446\u0438\u044f \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0432 \u044d\u0442\u043e\u043c \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435',
+      )
+
+      return
+    }
+
+    setFeedLoading(true)
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const {
+            latitude,
+            longitude,
+          } = position.coords
+
+          const feed =
+            await getEvents(
+              20,
+              undefined,
+              latitude,
+              longitude,
+            )
+
+          setActiveCategory(null)
+          setNearbyActive(true)
+          setEvents(feed.items)
+
+          requestAnimationFrame(
+            () => {
+              document
+                .querySelector(
+                  '.tiktok-feed',
+                )
+                ?.scrollTo({
+                  top: 0,
+                })
+            },
+          )
+        } catch {
+          setLocationError(
+            '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u0440\u044f\u0434\u043e\u043c',
+          )
+        } finally {
+          setFeedLoading(false)
+        }
+      },
+
+      () => {
+        setLocationError(
+          '\u0420\u0430\u0437\u0440\u0435\u0448\u0438 \u0434\u043e\u0441\u0442\u0443\u043f \u043a \u0433\u0435\u043e\u043f\u043e\u0437\u0438\u0446\u0438\u0438, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u0440\u044f\u0434\u043e\u043c',
+        )
+
+        setFeedLoading(false)
+      },
+
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      },
+    )
+  }
+
+  async function openComments(
+    event: ApiEvent,
+  ) {
+    setCommentsEvent(event)
+    setCommentsLoading(true)
+    setCommentError(null)
+
+    try {
+      const items =
+        await getComments(
+          event.id,
+        )
+
+      setComments(
+        (current) => ({
+          ...current,
+
+          [event.id]:
+            items,
+        }),
+      )
+    } catch {
+      setCommentError(
+        '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438',
+      )
+    } finally {
+      setCommentsLoading(false)
+    }
+  }
+
+  async function addComment() {
+    if (
+      !commentsEvent ||
+      commentSending
+    ) {
+      return
+    }
+
+    const text =
+      commentText.trim()
+
+    if (!text) {
+      return
+    }
+
+    const eventId =
+      commentsEvent.id
+
+    setCommentSending(true)
+    setCommentError(null)
+
+    try {
+      const comment =
+        await createComment(
+          eventId,
+          text,
+        )
+
+      setComments(
+        (current) => ({
+          ...current,
+
+          [eventId]: [
+            comment,
+            ...(current[eventId] ??
+              []),
+          ],
+        }),
+      )
+
+      setCommentText('')
+    } catch {
+      setCommentError(
+        '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439',
+      )
+    } finally {
+      setCommentSending(false)
+    }
+  }
+
+  async function shareEvent(
+    event: ApiEvent,
+    position: number,
+  ) {
+    const url =
+      event.ticketUrl ??
+      event.sourceUrl
+
+    const text = url
+      ? `${event.title}\n${url}`
+      : event.title
+
+    try {
+      if (
+        navigator.share &&
+        /Android|iPhone|iPad/i.test(
+          navigator.userAgent,
+        )
+      ) {
+        await navigator.share({
+          title: event.title,
+          text: event.title,
+          url: url ?? undefined,
+        })
+      } else if (
+        navigator.clipboard
+      ) {
+        await navigator.clipboard.writeText(
+          text,
+        )
+
+        window.alert(
+          '\u0421\u0441\u044b\u043b\u043a\u0430 \u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0430',
+        )
+      }
+
+      await sendInteraction(
+        event.id,
+        'SHARE',
+        {
+          metadata: {
+            position,
+            feed: nearbyActive
+              ? 'nearby'
+              : activeCategory
+                ? 'category'
+                : 'for-you',
+          },
+        },
+      )
+    } catch {
+      // ������������ ������ share sheet.
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-logo">
+          Evently
+        </div>
+
+        <div className="loading-text">
+          Готовим всё интересное…
+        </div>
+      </div>
+    )
+  }
+
+  if (
+    onboardingCompleted === false
+  ) {
+    return (
+      <Onboarding
+        categories={categories}
+        onComplete={
+          completeOnboarding
+        }
+      />
+    )
+  }
+
+  const orderedCategories =
+    [...categories].sort(
+      (a, b) => {
+        const aIndex =
+          preferredCategories.indexOf(
+            a.slug,
+          )
+
+        const bIndex =
+          preferredCategories.indexOf(
+            b.slug,
+          )
+
+        const aPreferred =
+          aIndex !== -1
+ 
+        const bPreferred =
+          bIndex !== -1
+
+        if (
+          aPreferred &&
+          !bPreferred
+        ) {
+          return -1
+        }
+
+        if (
+          !aPreferred &&
+          bPreferred
+        ) {
+          return 1
+        }
+
+        if (
+          aPreferred &&
+          bPreferred
+        ) {
+          return (
+            aIndex -
+            bIndex
+          )
+        }
+
+        return (
+          a.sortOrder -
+          b.sortOrder
+        )
+      },
+    )
+  const activeCategoryData =
+    categories.find(
+      (category) =>
+        category.slug ===
+        activeCategory,
+    )
+
+  return (
+    <div className="app">
+      <header className="feed-header">
+        <div className="feed-main-tabs">
+            <button
+            type="button"
+            className={
+              activeCategory === null &&
+              !nearbyActive
+                ? 'feed-main-tab active'
+                : 'feed-main-tab'
+            }
+            onClick={() =>
+                void switchCategory(null)
+            }
+            >
+            Для вас
+            </button>
+
+           <button
+             type="button"
+             className={
+               nearbyActive
+                 ? 'feed-main-tab active'
+                 : 'feed-main-tab'
+             }
+             onClick={() =>
+               void openNearby()
+             }
+           >
+             Рядом
+           </button>
+
+            <button
+            type="button"
+            className={
+                activeCategory
+                ? 'feed-main-tab category-picker-button active'
+                : 'feed-main-tab category-picker-button'
+            }
+            onClick={() =>
+                setCategoriesOpen(true)
+            }
+            >
+            <span>
+                {activeCategoryData
+                ? activeCategoryData.name
+                : 'Категории'}
+            </span>
+
+            <ChevronDown
+                size={15}
+            />
+            </button>
+        </div>
+        </header>
+
+    {categoriesOpen && (
+      <CategorySheet
+        categories={
+          orderedCategories
+        }
+        preferredCategories={
+          preferredCategories
+        }
+        activeCategory={
+          activeCategory
+        }
+        onClose={() =>
+          setCategoriesOpen(false)
+        }
+        onSelect={(category) => {
+          setCategoriesOpen(false)
+
+          void switchCategory(
+            category,
+          )
+        }}
+      />
+    )}
+
+    {feedLoading && (
+      <div className="feed-switch-loader">
+        Подбираем…
+      </div>
+    )}
+
+    {locationError && (
+      <div className="location-error">
+        {locationError}
+      </div>
+    )}
+
+      <main className="tiktok-feed">
+        {events.length === 0 ? (
+          <div className="empty-feed">
+            <div className="empty-feed-icon">
+              {activeCategoryData?.icon ?? '?'}
+            </div>
+
+            <h2>
+              Пока ничего нет
+            </h2>
+
+            <p>
+              {activeCategoryData
+                ? `В категории «${activeCategoryData.name}» пока нет событий`
+                : 'Пока не нашли подходящих событий'}
+            </p>
+
+            {activeCategory !== null && (
+              <button
+                type="button"
+                className="empty-feed-button"
+                onClick={() =>
+                  void switchCategory(null)
+                }
+              >
+                Вернуться в «Для вас»
+              </button>
+            )}
+          </div>
+        ) : (
+          events.map(
+            (event, index) => {
+              const eventComments =
+                comments[event.id] ?? []
+
+              return (
+                <EventSlide
+                  key={event.id}
+                  event={event}
+                  position={index}
+                  liked={Boolean(
+                    liked[event.id],
+                  )}
+                  commentsCount={
+                    eventComments.length
+                  }
+                  onLike={() => {
+                    const willBeLiked =
+                      !liked[event.id]
+
+                    setLiked(
+                      (current) => ({
+                        ...current,
+                        [event.id]:
+                          willBeLiked,
+                      }),
+                    )
+
+                    void sendInteraction(
+                      event.id,
+                      willBeLiked
+                        ? 'FAVORITE'
+                        : 'UNFAVORITE',
+                      {
+                        metadata: {
+                          position: index,
+                          feed: 'for-you',
+                        },
+                      },
+                    )
+                  }}
+                  onComments={() =>
+                    void openComments(
+                      event,
+                    )
+                  }
+                  onShare={() =>
+                    void shareEvent(
+                      event,
+                      index,
+                    )
+                  }
+                />
+              )
+            },
+          )
+        )}
+      </main>
+
+      {commentsEvent && (
+        <div className="comments-backdrop">
+            <div className="comments-sheet">
+            <div className="comments-header">
+                <strong>
+                {'\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438'}
+                </strong>
+
+                <button
+                type="button"
+                onClick={() => {
+                    setCommentsEvent(null)
+                    setCommentText('')
+                    setCommentError(null)
+                }}
+                >
+                <X size={24} />
+                </button>
+            </div>
+
+            <div className="comments-content">
+                {commentsLoading ? (
+                <div className="empty-comments">
+                    <MessageCircle size={36} />
+
+                    <strong>
+                    {'\u0417\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u043c\u2026'}
+                    </strong>
+                </div>
+                ) : (
+                <>
+                    {commentError && (
+                    <div className="empty-comments">
+                        <strong>
+                        {commentError}
+                        </strong>
+                    </div>
+                    )}
+
+                    {(comments[
+                    commentsEvent.id
+                    ] ?? []).length === 0 &&
+                    !commentError ? (
+                    <div className="empty-comments">
+                        <MessageCircle
+                        size={36}
+                        />
+
+                        <strong>
+                        {'\u041f\u043e\u043a\u0430 \u0442\u0438\u0445\u043e'}
+                        </strong>
+
+                        <span>
+                        {'\u0411\u0443\u0434\u044c \u043f\u0435\u0440\u0432\u044b\u043c, \u043a\u0442\u043e \u0447\u0442\u043e-\u043d\u0438\u0431\u0443\u0434\u044c \u043d\u0430\u043f\u0438\u0448\u0435\u0442'}
+                        </span>
+                    </div>
+                    ) : (
+                    !commentError &&
+                    (
+                        comments[
+                        commentsEvent.id
+                        ] ?? []
+                    ).map(
+                        (comment) => (
+                        <div
+                            className="comment"
+                            key={comment.id}
+                        >
+                            <div className="comment-avatar">
+                            {comment.author
+                                .slice(0, 1)
+                                .toUpperCase()}
+                            </div>
+
+                            <div>
+                            <strong>
+                                {comment.author}
+                            </strong>
+
+                            <p>
+                                {comment.text}
+                            </p>
+                            </div>
+                        </div>
+                        ),
+                    )
+                    )}
+                </>
+                )}
+            </div>
+
+            <div className="comment-form">
+                <input
+                value={commentText}
+                disabled={
+                    commentSending
+                }
+                onChange={(event) =>
+                    setCommentText(
+                    event.target.value,
+                    )
+                }
+                onKeyDown={(event) => {
+                    if (
+                    event.key ===
+                    'Enter'
+                    ) {
+                    void addComment()
+                    }
+                }}
+                placeholder={
+                    '\u041d\u0430\u043f\u0438\u0441\u0430\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439...'
+                }
+                />
+
+                <button
+                type="button"
+                disabled={
+                    commentSending ||
+                    !commentText.trim()
+                }
+                onClick={() =>
+                    void addComment()
+                }
+                >
+                <Send size={20} />
+                </button>
+            </div>
+            </div>
+        </div>
+        )}
+    </div>
+  )
+}
+
+export default App

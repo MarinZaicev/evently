@@ -1,0 +1,573 @@
+import {
+  useEffect,
+  useState,
+} from 'react'
+
+import {
+  MessageCircle,
+  Send,
+  X,
+} from 'lucide-react'
+
+import {
+  getEvents,
+  type ApiEvent,
+} from './lib/api'
+
+import {
+  sendInteraction,
+} from './lib/interactions'
+
+import {
+  getCategories,
+  getProfileInterests,
+  saveProfileInterests,
+  type ApiCategory,
+} from './lib/profile'
+
+import {
+  EventSlide,
+} from './components/EventSlide'
+
+import {
+  Onboarding,
+} from './components/Onboarding'
+
+type Comment = {
+  id: string
+  text: string
+}
+
+function App() {
+  const [events, setEvents] =
+    useState<ApiEvent[]>([])
+
+  const [categories, setCategories] =
+    useState<ApiCategory[]>([])
+  const [
+    preferredCategories,
+    setPreferredCategories,
+  ] = useState<string[]>([])
+
+  const [
+    activeCategory,
+    setActiveCategory,
+  ] = useState<string | null>(
+    null,
+  )
+
+  const [
+    feedLoading,
+    setFeedLoading,
+  ] = useState(false)
+
+  const [
+    onboardingCompleted,
+    setOnboardingCompleted,
+  ] = useState<boolean | null>(null)
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [liked, setLiked] =
+    useState<
+      Record<string, boolean>
+    >({})
+
+  const [comments, setComments] =
+    useState<
+      Record<string, Comment[]>
+    >({})
+
+  const [
+    commentsEvent,
+    setCommentsEvent,
+  ] = useState<ApiEvent | null>(
+    null,
+  )
+
+  const [
+    commentText,
+    setCommentText,
+  ] = useState('')
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const [
+          profile,
+          categoryItems,
+        ] = await Promise.all([
+          getProfileInterests(),
+          getCategories(),
+        ])
+
+        setPreferredCategories(
+          profile.categories.map(
+            (category) =>
+              category.slug,
+          ),
+        )
+
+        setCategories(
+          categoryItems,
+        )
+
+        setOnboardingCompleted(
+          profile.onboardingCompleted,
+        )
+
+        if (
+          profile.onboardingCompleted
+        ) {
+          const feed =
+            await getEvents(20)
+
+          setEvents(feed.items)
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void initialize()
+  }, [])
+
+  async function completeOnboarding(
+    selected: string[],
+  ) {
+    await saveProfileInterests(
+      selected,
+    )
+
+    setOnboardingCompleted(true)
+
+    const feed =
+      await getEvents(20)
+
+    setEvents(feed.items)
+  }
+
+  async function switchCategory(
+    category: string | null,
+  ) {
+    if (
+      category ===
+      activeCategory
+    ) {
+     return
+    }
+
+    setActiveCategory(category)
+    setFeedLoading(true)
+
+    try {
+      const feed =
+        await getEvents(
+          20,
+          category ??
+            undefined,
+        )
+
+      setEvents(feed.items)
+
+      // œÓÒÎÂ ÒÏÂÌ˚ Í‡ÚÂ„ÓËË
+      // ‚ÓÁ‚‡˘‡ÂÏ ÎÂÌÚÛ Ì‡‚Âı.
+      requestAnimationFrame(
+        () => {
+          document
+            .querySelector(
+              '.tiktok-feed',
+            )
+            ?.scrollTo({
+              top: 0,
+            })
+        },
+      )
+    } finally {
+      setFeedLoading(false)
+    }
+  }
+
+  function addComment() {
+    if (!commentsEvent) {
+      return
+    }
+
+    const text =
+      commentText.trim()
+
+    if (!text) {
+      return
+    }
+
+    const eventId =
+      commentsEvent.id
+
+    setComments((current) => ({
+      ...current,
+
+      [eventId]: [
+        ...(current[eventId] ??
+          []),
+
+        {
+          id: crypto.randomUUID(),
+          text,
+        },
+      ],
+    }))
+
+    setCommentText('')
+  }
+
+  async function shareEvent(
+    event: ApiEvent,
+    position: number,
+  ) {
+    const url =
+      event.sourceUrl ?? ''
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: event.title,
+          text: event.title,
+          url:
+            url || undefined,
+        })
+      } else if (
+        navigator.clipboard
+      ) {
+        await navigator.clipboard.writeText(
+          url || event.title,
+        )
+      }
+
+      await sendInteraction(
+        event.id,
+        'SHARE',
+        {
+          metadata: {
+            position,
+            feed: 'for-you',
+          },
+        },
+      )
+    } catch {
+      // Share sheet –∑–∞–∫—Ä—ã—Ç.
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-logo">
+          Evently
+        </div>
+
+        <div className="loading-text">
+          –ì–æ—Ç–æ–≤–∏–º –≤—Å—ë –∏–Ω—Ç–µ—Ä–µ—Å–Ω–æ–µ‚Ä¶
+        </div>
+      </div>
+    )
+  }
+
+  if (
+    onboardingCompleted === false
+  ) {
+    return (
+      <Onboarding
+        categories={categories}
+        onComplete={
+          completeOnboarding
+        }
+      />
+    )
+  }
+
+  const orderedCategories =
+    [...categories].sort(
+      (a, b) => {
+        const aIndex =
+          preferredCategories.indexOf(
+            a.slug,
+          )
+
+        const bIndex =
+          preferredCategories.indexOf(
+            b.slug,
+          )
+
+        const aPreferred =
+          aIndex !== -1
+ 
+        const bPreferred =
+          bIndex !== -1
+
+        if (
+          aPreferred &&
+          !bPreferred
+        ) {
+          return -1
+        }
+
+        if (
+          !aPreferred &&
+          bPreferred
+        ) {
+          return 1
+        }
+
+        if (
+          aPreferred &&
+          bPreferred
+        ) {
+          return (
+            aIndex -
+            bIndex
+          )
+        }
+
+        return (
+          a.sortOrder -
+          b.sortOrder
+        )
+      },
+    )
+
+  return (
+    <div className="app">
+      <header className="feed-header">
+        <div className="feed-tabs">
+            <button
+            type="button"
+            className={
+                activeCategory === null
+                ? 'active'
+                : ''
+            }
+            onClick={() =>
+                void switchCategory(null)
+            }
+            >
+            ƒÎˇ ‚‡Ò
+            </button>
+
+            <button
+            type="button"
+            className="nearby-tab"
+            title="—ÍÓÓ ÔÓ‰ÍÎ˛˜ËÏ „ÂÓÎÓÍ‡ˆË˛"
+            >
+            –ˇ‰ÓÏ
+            </button>
+
+            {orderedCategories.map(
+            (category) => (
+                <button
+                type="button"
+                key={category.id}
+                className={
+                    activeCategory === category.slug
+                    ? 'active'
+                    : ''
+                }
+                onClick={() =>
+                    void switchCategory(
+                    category.slug,
+                    )
+                }
+                >
+                {category.name}
+                </button>
+            ),
+            )}
+        </div>
+        </header>
+
+    {feedLoading && (
+      <div className="feed-switch-loader">
+        œÓ‰·Ë‡ÂÏÖ
+      </div>
+    )}
+
+      <main className="tiktok-feed">
+        {events.map(
+          (event, index) => {
+            const eventComments =
+              comments[event.id] ??
+              []
+
+            return (
+              <EventSlide
+                key={event.id}
+                event={event}
+                position={index}
+                liked={Boolean(
+                  liked[event.id],
+                )}
+                commentsCount={
+                  eventComments.length
+                }
+                onLike={() => {
+                  const willBeLiked =
+                    !liked[event.id]
+
+                  setLiked(
+                    (current) => ({
+                      ...current,
+
+                      [event.id]:
+                        willBeLiked,
+                    }),
+                  )
+
+                  void sendInteraction(
+                    event.id,
+                    willBeLiked
+                      ? 'FAVORITE'
+                      : 'UNFAVORITE',
+                    {
+                      metadata: {
+                        position:
+                          index,
+                        feed:
+                          'for-you',
+                      },
+                    },
+                  )
+                }}
+                onComments={() =>
+                  setCommentsEvent(
+                    event,
+                  )
+                }
+                onShare={() =>
+                  void shareEvent(
+                    event,
+                    index,
+                  )
+                }
+              />
+            )
+          },
+        )}
+      </main>
+
+      {commentsEvent && (
+        <div className="comments-backdrop">
+          <div className="comments-sheet">
+            <div className="comments-header">
+              <strong>
+                –ö–æ–º–º–µ–Ω—Ç–∞—Ä–∏–∏
+              </strong>
+
+              <button
+                onClick={() =>
+                  setCommentsEvent(
+                    null,
+                  )
+                }
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="comments-content">
+              {(comments[
+                commentsEvent.id
+              ] ?? []).length ===
+              0 ? (
+                <div className="empty-comments">
+                  <MessageCircle
+                    size={36}
+                  />
+
+                  <strong>
+                    –ü–æ–∫–∞ —Ç–∏—Ö–æ
+                  </strong>
+
+                  <span>
+                    –ë—É–¥—å –ø–µ—Ä–≤—ã–º,
+                    –∫—Ç–æ —á—Ç–æ-–Ω–∏–±—É–¥—å
+                    –Ω–∞–ø–∏—à–µ—Ç
+                  </span>
+                </div>
+              ) : (
+                (
+                  comments[
+                    commentsEvent.id
+                  ] ?? []
+                ).map(
+                  (comment) => (
+                    <div
+                      className="comment"
+                      key={
+                        comment.id
+                      }
+                    >
+                      <div className="comment-avatar">
+                        U
+                      </div>
+
+                      <div>
+                        <strong>
+                          –ü–æ–ª—å–∑–æ–≤–∞—Ç–µ–ª—å
+                        </strong>
+
+                        <p>
+                          {
+                            comment.text
+                          }
+                        </p>
+                      </div>
+                    </div>
+                  ),
+                )
+              )}
+            </div>
+
+            <div className="comment-form">
+              <input
+                value={
+                  commentText
+                }
+                onChange={(
+                  event,
+                ) =>
+                  setCommentText(
+                    event.target
+                      .value,
+                  )
+                }
+                onKeyDown={(
+                  event,
+                ) => {
+                  if (
+                    event.key ===
+                    'Enter'
+                  ) {
+                    addComment()
+                  }
+                }}
+                placeholder="–ù–∞–ø–∏—Å–∞—Ç—å –∫–æ–º–º–µ–Ω—Ç–∞—Ä–∏–π..."
+              />
+
+              <button
+                onClick={
+                  addComment
+                }
+              >
+                <Send
+                  size={20}
+                />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App

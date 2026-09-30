@@ -1,0 +1,142 @@
+# =========================================
+# Evently hackathon repository
+# Root: /home/matatik
+# =========================================
+
+
+# -----------------------------------------
+# Home directory / system / private files
+# -----------------------------------------
+
+/.bash_history
+/.bash_logout
+/.bashrc
+/.cache/
+/.config/
+/.gitconfig
+/.lesshst
+/.local/
+/.nvm/
+/.ollama/
+/.profile
+/.python_history
+/.ssh/
+/.venvs/
+
+
+# Backup of old nested Evently git repository
+/.evently-git-backup/
+
+
+# -----------------------------------------
+# Secrets / environment files
+# -----------------------------------------
+
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Safe templates are allowed
+!.env.example
+!**/.env.example
+
+
+# -----------------------------------------
+# Node / frontend / backend dependencies
+# -----------------------------------------
+
+node_modules/
+**/node_modules/
+
+.pnpm-store/
+**/.pnpm-store/
+
+dist/
+**/dist/
+
+build/
+**/build/
+
+.vite/
+**/.vite/
+
+*.tsbuildinfo
+
+
+# -----------------------------------------
+# Python
+# -----------------------------------------
+
+__pycache__/
+**/__pycache__/
+
+*.pyc
+*.pyo
+
+.venv/
+**/.venv/
+
+
+# -----------------------------------------
+# Parser generated data
+# -----------------------------------------
+
+/afisha-data/output/
+/afisha-data/releases/
+
+# Parsed / generated output if it appears
+# elsewhere
+**/output/raw/
+**/output/events/
+**/output/images/
+**/output/movies/
+**/output/preview/
+
+
+# -----------------------------------------
+# Database dumps
+# -----------------------------------------
+
+*.dump
+*.sql
+*.sqlite
+*.sqlite3
+
+
+# -----------------------------------------
+# Archives
+# -----------------------------------------
+
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+
+# -----------------------------------------
+# Logs / temporary files
+# -----------------------------------------
+
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+
+logs/
+**/logs/
+
+
+# -----------------------------------------
+# OS / editors
+# -----------------------------------------
+
+.DS_Store
+Thumbs.db
+
+.idea/
+**/.idea/
+
+.vscode/
+**/.vscode/

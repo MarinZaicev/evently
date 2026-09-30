@@ -1,0 +1,2282 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+
+import {
+  ArrowRight,
+  Bot,
+  CalendarDays,
+  ChevronDown,
+  Home,
+  MapPin,
+  MessageCircle,
+  PartyPopper,
+  Play,
+  Send,
+  Sparkles,
+  Ticket,
+  UserRound,
+  X,
+} from 'lucide-react'
+
+import {
+  getEvents,
+  type ApiEvent,
+} from './lib/api'
+
+import {
+  getMaxInitData,
+} from './lib/max'
+
+import {
+  sendAiMessage,
+  type AiEventSuggestion,
+} from './lib/ai'
+
+import {
+  sendInteraction,
+} from './lib/interactions'
+
+import {
+  createComment,
+  getComments,
+  type ApiComment,
+} from './lib/comments'
+
+import {
+  getCategories,
+  getProfileInterests,
+  saveProfileInterests,
+  type ApiCategory,
+} from './lib/profile'
+
+import {
+  EventSlide,
+} from './components/EventSlide'
+
+import {
+  Onboarding,
+} from './components/Onboarding'
+
+import {
+  CategorySheet,
+} from './components/CategorySheet'
+
+import {
+  EventDetailsSheet,
+} from './components/EventDetailsSheet'
+
+
+type AppPage =
+  | 'home'
+  | 'feed'
+  | 'assistant'
+  | 'profile'
+
+type QuickFilter =
+  | 'today'
+  | 'weekend'
+  | 'free'
+
+function getMaxFirstName() {
+  try {
+    const initData =
+      getMaxInitData()
+
+    if (!initData) {
+      return null
+    }
+
+    const params =
+      new URLSearchParams(
+        initData,
+      )
+
+    const rawUser =
+      params.get('user')
+
+    if (!rawUser) {
+      return null
+    }
+
+    const user =
+      JSON.parse(rawUser) as {
+        first_name?: unknown
+      }
+
+    return typeof user.first_name ===
+      'string'
+      ? user.first_name.trim() ||
+          null
+      : null
+  } catch {
+    return null
+  }
+}
+
+function eventImage(
+  event: ApiEvent,
+) {
+  const value =
+    event as ApiEvent & {
+      images?: Array<{
+        url?: string | null
+      }>
+    }
+
+  return (
+    value.images?.find(
+      (image) => Boolean(image.url),
+    )?.url ?? null
+  )
+}
+
+function eventCategoryName(
+  event: ApiEvent,
+) {
+  const value =
+    event as ApiEvent & {
+      categories?: Array<{
+        name?: string | null
+        slug?: string | null
+      }>
+    }
+
+  return (
+    value.categories?.[0]?.name ??
+    value.categories?.[0]?.slug ??
+    '\u0421\u043e\u0431\u044b\u0442\u0438\u0435'
+  )
+}
+
+function eventVenueName(
+  event: ApiEvent,
+) {
+  const value =
+    event as ApiEvent & {
+      venue?: {
+        name?: string | null
+      } | null
+    }
+
+  return (
+    value.venue?.name ??
+    '\u041c\u043e\u0441\u043a\u0432\u0430'
+  )
+}
+
+function eventPrice(
+  event: ApiEvent,
+) {
+  const value =
+    event as ApiEvent & {
+      isFree?: boolean
+      priceMin?: number | null
+    }
+
+  if (value.isFree) {
+    return '\u0411\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u043e'
+  }
+
+  if (
+    typeof value.priceMin ===
+      'number'
+  ) {
+    return `\u043e\u0442 ${value.priceMin} \u20bd`
+  }
+
+  return '\u0426\u0435\u043d\u0430 \u043d\u0430 \u0441\u0430\u0439\u0442\u0435'
+}
+
+function eventOccurrenceDates(
+  event: ApiEvent,
+) {
+  const value =
+    event as ApiEvent & {
+      occurrences?: Array<{
+        startsAt?: string | null
+      }>
+    }
+
+  return (
+    value.occurrences ??
+    []
+  )
+    .map(
+      (occurrence) =>
+        occurrence.startsAt
+          ? new Date(
+              occurrence.startsAt,
+            )
+          : null,
+    )
+    .filter(
+      (date): date is Date =>
+        Boolean(
+          date &&
+            !Number.isNaN(
+              date.getTime(),
+            ),
+        ),
+    )
+}
+
+function matchesQuickFilter(
+  event: ApiEvent,
+  filter: QuickFilter,
+) {
+  if (filter === 'free') {
+    return Boolean(
+      (
+        event as ApiEvent & {
+          isFree?: boolean
+        }
+      ).isFree,
+    )
+  }
+
+  const now =
+    new Date()
+
+  const occurrences =
+    eventOccurrenceDates(event)
+
+  if (filter === 'today') {
+    return occurrences.some(
+      (date) =>
+        date.getFullYear() ===
+          now.getFullYear() &&
+        date.getMonth() ===
+          now.getMonth() &&
+        date.getDate() ===
+          now.getDate(),
+    )
+  }
+
+  const day =
+    now.getDay()
+
+  const daysUntilSaturday =
+    (6 - day + 7) % 7
+
+  const saturday =
+    new Date(now)
+
+  saturday.setHours(
+    0,
+    0,
+    0,
+    0,
+  )
+
+  saturday.setDate(
+    now.getDate() +
+      daysUntilSaturday,
+  )
+
+  const monday =
+    new Date(saturday)
+
+  monday.setDate(
+    saturday.getDate() + 2,
+  )
+
+  return occurrences.some(
+    (date) =>
+      date >= saturday &&
+      date < monday,
+  )
+}
+
+function getStoredCity() {
+  try {
+    return (
+      localStorage.getItem(
+        'evently-city',
+      ) ?? 'msk'
+    )
+  } catch {
+    return 'msk'
+  }
+}
+
+
+function HomePage({
+  firstName,
+  events,
+  categories,
+  onOpenFeed,
+  onNearby,
+  onQuickFilter,
+  onCategory,
+  onEvent,
+  onAssistant,
+}: {
+  firstName: string | null
+  events: ApiEvent[]
+  categories: ApiCategory[]
+  onOpenFeed: () => void
+  onNearby: () => void
+  onQuickFilter:
+    (filter: QuickFilter) => void
+  onCategory:
+    (category: string) => void
+  onEvent:
+    (
+      event: ApiEvent,
+      position: number,
+    ) => void
+  onAssistant: () => void
+}) {
+  const recommendations =
+    events.slice(0, 5)
+
+  const moods = [
+    {
+      icon: '\ud83d\udd25',
+      label: '\u0425\u043e\u0447\u0443 \u0434\u0432\u0438\u0436',
+      category: 'party',
+    },
+    {
+      icon: '\u2764\ufe0f',
+      label: '\u041d\u0430 \u0441\u0432\u0438\u0434\u0430\u043d\u0438\u0435',
+      category: 'exhibition',
+    },
+    {
+      icon: '\ud83d\udc65',
+      label: '\u0421 \u0434\u0440\u0443\u0437\u044c\u044f\u043c\u0438',
+      category: 'games',
+    },
+    {
+      icon: '\ud83c\udf19',
+      label: '\u0421\u043f\u043e\u043a\u043e\u0439\u043d\u044b\u0439 \u0432\u0435\u0447\u0435\u0440',
+      category: 'theatre',
+    },
+    {
+      icon: '\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67',
+      label: '\u0421 \u0434\u0435\u0442\u044c\u043c\u0438',
+      category: 'family',
+    },
+  ]
+
+  return (
+    <main className="home-page">
+      <div className="home-glow home-glow-one" />
+      <div className="home-glow home-glow-two" />
+
+      <div className="home-content">
+        <header className="home-topbar">
+          <div className="home-brand">
+            Evently
+          </div>
+
+          <div className="home-city">
+            <MapPin size={14} />
+
+            <select
+              className="home-city-select"
+              defaultValue={
+                getStoredCity()
+              }
+              onChange={(event) => {
+                try {
+                  localStorage.setItem(
+                    'evently-city',
+                    event.target.value,
+                  )
+                } catch {
+                  // ignore storage errors
+                }
+
+                window.location.reload()
+              }}
+            >
+              <option value="msk">
+                {'\u041c\u043e\u0441\u043a\u0432\u0430'}
+              </option>
+
+              <option value="spb">
+                {'\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433'}
+              </option>
+
+              <option value="nsk">
+                {'\u041d\u043e\u0432\u043e\u0441\u0438\u0431\u0438\u0440\u0441\u043a'}
+              </option>
+
+              <option value="ekb">
+                {'\u0415\u043a\u0430\u0442\u0435\u0440\u0438\u043d\u0431\u0443\u0440\u0433'}
+              </option>
+
+              <option value="kzn">
+                {'\u041a\u0430\u0437\u0430\u043d\u044c'}
+              </option>
+
+              <option value="nnv">
+                {'\u041d\u0438\u0436\u043d\u0438\u0439 \u041d\u043e\u0432\u0433\u043e\u0440\u043e\u0434'}
+              </option>
+
+              <option value="krd">
+                {'\u041a\u0440\u0430\u0441\u043d\u043e\u0434\u0430\u0440'}
+              </option>
+
+              <option value="perm">
+                {'\u041f\u0435\u0440\u043c\u044c'}
+              </option>
+
+              <option value="omsk">
+                {'\u041e\u043c\u0441\u043a'}
+              </option>
+
+              <option value="chelyabinsk">
+                {'\u0427\u0435\u043b\u044f\u0431\u0438\u043d\u0441\u043a'}
+              </option>
+
+              <option value="krasnoyarsk">
+                {'\u041a\u0440\u0430\u0441\u043d\u043e\u044f\u0440\u0441\u043a'}
+              </option>
+
+              <option value="ufa">
+                {'\u0423\u0444\u0430'}
+              </option>
+
+              <option value="smr">
+                {'\u0421\u0430\u043c\u0430\u0440\u0430'}
+              </option>
+
+              <option value="rostov">
+                {'\u0420\u043e\u0441\u0442\u043e\u0432-\u043d\u0430-\u0414\u043e\u043d\u0443'}
+              </option>
+
+              <option value="voronezh">
+                {'\u0412\u043e\u0440\u043e\u043d\u0435\u0436'}
+              </option>
+
+              <option value="volgograd">
+                {'\u0412\u043e\u043b\u0433\u043e\u0433\u0440\u0430\u0434'}
+              </option>
+            </select>
+
+            <ChevronDown size={13} />
+          </div>
+        </header>
+
+        <section className="home-hero">
+          <div className="home-eyebrow">
+            {'\u0422\u0432\u043e\u0439 \u0433\u0438\u0434 \u043f\u043e \u0433\u043e\u0440\u043e\u0434\u0443'}
+          </div>
+
+          <h1>
+            {firstName
+              ? `${firstName}, \u043a\u0443\u0434\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f?`
+              : '\u041a\u0443\u0434\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f?'}
+          </h1>
+
+          <button
+            type="button"
+            className="ai-entry"
+            onClick={onAssistant}
+          >
+            <span className="ai-entry-icon">
+              <Sparkles size={20} />
+            </span>
+
+            <span className="ai-entry-copy">
+              <strong>
+                {'\u0421\u043f\u0440\u043e\u0441\u0438 Evently AI'}
+              </strong>
+
+              <small>
+                {'\u041a\u0443\u0434\u0430 \u0441\u0445\u043e\u0434\u0438\u0442\u044c \u0432\u0435\u0447\u0435\u0440\u043e\u043c?'}
+              </small>
+            </span>
+
+            <ArrowRight size={19} />
+          </button>
+        </section>
+
+        <section className="quick-grid">
+          <button
+            type="button"
+            className="quick-card"
+            onClick={() =>
+              onQuickFilter('today')
+            }
+          >
+            <span>
+              <CalendarDays size={19} />
+            </span>
+            {'\u0421\u0435\u0433\u043e\u0434\u043d\u044f'}
+          </button>
+
+          <button
+            type="button"
+            className="quick-card"
+            onClick={() =>
+              onQuickFilter('weekend')
+            }
+          >
+            <span>
+              <PartyPopper size={19} />
+            </span>
+            {'\u0412\u044b\u0445\u043e\u0434\u043d\u044b\u0435'}
+          </button>
+
+          <button
+            type="button"
+            className="quick-card"
+            onClick={onNearby}
+          >
+            <span>
+              <MapPin size={19} />
+            </span>
+            {'\u0420\u044f\u0434\u043e\u043c'}
+          </button>
+
+          <button
+            type="button"
+            className="quick-card"
+            onClick={() =>
+              onQuickFilter('free')
+            }
+          >
+            <span>
+              <Ticket size={19} />
+            </span>
+            {'\u0411\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u043e'}
+          </button>
+        </section>
+
+        <section className="home-section">
+          <div className="home-section-head">
+            <div>
+              <span>
+                {'\u041f\u0435\u0440\u0441\u043e\u043d\u0430\u043b\u044c\u043d\u0430\u044f \u043f\u043e\u0434\u0431\u043e\u0440\u043a\u0430'}
+              </span>
+              <h2>
+                {'\u0414\u043b\u044f \u0442\u0435\u0431\u044f \u0441\u0435\u0433\u043e\u0434\u043d\u044f'}
+              </h2>
+            </div>
+
+            <button
+              type="button"
+              className="home-link-button"
+              onClick={onOpenFeed}
+            >
+              {'\u0412\u0441\u0435'}
+              <ArrowRight size={15} />
+            </button>
+          </div>
+
+          <div className="home-event-row">
+            {recommendations.map(
+              (event, index) => {
+                const image =
+                  eventImage(event)
+
+                return (
+                  <button
+                    type="button"
+                    className="home-event-card"
+                    key={event.id}
+                    onClick={() =>
+                      onEvent(
+                        event,
+                        index,
+                      )
+                    }
+                  >
+                    <div className="home-event-image-wrap">
+                      {image ? (
+                        <img
+                          src={image}
+                          alt=""
+                          className="home-event-image"
+                        />
+                      ) : (
+                        <div className="home-event-placeholder">
+                          <Sparkles
+                            size={24}
+                          />
+                        </div>
+                      )}
+
+                      <div className="home-event-price">
+                        {eventPrice(
+                          event,
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="home-event-copy">
+                      <span>
+                        {eventCategoryName(
+                          event,
+                        )}
+                      </span>
+
+                      <strong>
+                        {event.title}
+                      </strong>
+
+                      <small>
+                        <MapPin
+                          size={12}
+                        />
+                        {eventVenueName(
+                          event,
+                        )}
+                      </small>
+                    </div>
+                  </button>
+                )
+              },
+            )}
+          </div>
+        </section>
+
+        <section className="home-section">
+          <div className="home-section-head">
+            <div>
+              <span>
+                {'\u0411\u044b\u0441\u0442\u0440\u044b\u0439 \u0432\u044b\u0431\u043e\u0440'}
+              </span>
+              <h2>
+                {'\u041f\u043e \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0438\u044e'}
+              </h2>
+            </div>
+          </div>
+
+          <div className="mood-grid">
+            {moods.map(
+              (mood) => (
+                <button
+                  type="button"
+                  className="mood-card"
+                  key={mood.label}
+                  onClick={() =>
+                    onCategory(
+                      mood.category,
+                    )
+                  }
+                >
+                  <span>
+                    {mood.icon}
+                  </span>
+
+                  <strong>
+                    {mood.label}
+                  </strong>
+                </button>
+              ),
+            )}
+          </div>
+        </section>
+
+        <section className="home-section">
+          <div className="home-section-head">
+            <div>
+              <span>
+                {'\u0418\u0441\u0441\u043b\u0435\u0434\u0443\u0439'}
+              </span>
+              <h2>
+                {'\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438'}
+              </h2>
+            </div>
+          </div>
+
+          <div className="home-category-grid">
+            {categories.map(
+              (category) => (
+                <button
+                  type="button"
+                  className="home-category-card"
+                  key={category.slug}
+                  onClick={() =>
+                    onCategory(
+                      category.slug,
+                    )
+                  }
+                >
+                  <span>
+                    {category.icon ??
+                      '\u2728'}
+                  </span>
+
+                  <strong>
+                    {category.name}
+                  </strong>
+                </button>
+              ),
+            )}
+          </div>
+        </section>
+      </div>
+    </main>
+  )
+}
+
+type AssistantUiMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  events?: AiEventSuggestion[]
+}
+
+const AI_STORAGE_KEY =
+  'evently_ai_messages_v1'
+
+function getInitialAiMessages(): AssistantUiMessage[] {
+  try {
+    const saved =
+      sessionStorage.getItem(
+        AI_STORAGE_KEY,
+      )
+
+    if (saved) {
+      const parsed =
+        JSON.parse(saved) as
+          AssistantUiMessage[]
+
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0
+      ) {
+        return parsed
+      }
+    }
+  } catch {
+    // Если storage недоступен, просто начинаем новый чат.
+  }
+
+  return [
+    {
+      id: 'welcome',
+      role: 'assistant',
+      content:
+        '\u041f\u0440\u0438\u0432\u0435\u0442! \u042f Evently AI. \u0420\u0430\u0441\u0441\u043a\u0430\u0436\u0438, \u043a\u0443\u0434\u0430 \u0445\u043e\u0447\u0435\u0448\u044c \u0441\u0445\u043e\u0434\u0438\u0442\u044c, \u0441 \u043a\u0435\u043c \u0438 \u043a\u0430\u043a\u043e\u0439 \u0431\u044e\u0434\u0436\u0435\u0442 \u2014 \u043f\u043e\u0434\u0431\u0435\u0440\u0443 \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u044b \u0438\u0437 Evently.',
+    },
+  ]
+}
+
+function formatAiEventDate(
+  value: string | null,
+) {
+  if (!value) {
+    return null
+  }
+
+  const date = new Date(value)
+
+  if (
+    Number.isNaN(
+      date.getTime(),
+    )
+  ) {
+    return null
+  }
+
+  return new Intl.DateTimeFormat(
+    'ru-RU',
+    {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    },
+  ).format(date)
+}
+
+function AssistantPage() {
+  const suggestions = [
+    '\u041a\u0443\u0434\u0430 \u0441\u0445\u043e\u0434\u0438\u0442\u044c \u0441\u0435\u0433\u043e\u0434\u043d\u044f \u0432\u0435\u0447\u0435\u0440\u043e\u043c?',
+    '\u041f\u043e\u0434\u0431\u0435\u0440\u0438 \u0438\u0434\u0435\u044e \u0434\u043b\u044f \u0441\u0432\u0438\u0434\u0430\u043d\u0438\u044f',
+    '\u0425\u043e\u0447\u0443 \u0447\u0442\u043e-\u043d\u0438\u0431\u0443\u0434\u044c \u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u043e\u0435',
+  ]
+
+  const [messages, setMessages] =
+    useState<AssistantUiMessage[]>(
+      getInitialAiMessages,
+    )
+
+  const [input, setInput] =
+    useState('')
+
+  const [sending, setSending] =
+    useState(false)
+
+  const [error, setError] =
+    useState<string | null>(null)
+
+  const bottomRef =
+    useRef<HTMLDivElement | null>(
+      null,
+    )
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        AI_STORAGE_KEY,
+        JSON.stringify(messages),
+      )
+    } catch {
+      // Чат продолжит работать и без storage.
+    }
+
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'end',
+      })
+    })
+  }, [messages, sending])
+
+  async function submitMessage(
+    rawText?: string,
+  ) {
+    if (sending) {
+      return
+    }
+
+    const text =
+      (rawText ?? input).trim()
+
+    if (!text) {
+      return
+    }
+
+    const history =
+      messages
+        .filter(
+          (message) =>
+            message.id !==
+            'welcome',
+        )
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+
+          /*
+           * Пользователь этого не видит,
+           * но backend теперь знает,
+           * какие именно карточки были
+           * показаны в прошлом ответе.
+           */
+          eventIds:
+            message.events?.map(
+              (event) =>
+                event.id,
+            ),
+        }))
+
+    const userMessage:
+      AssistantUiMessage = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: text,
+      }
+
+    setMessages((current) => [
+      ...current,
+      userMessage,
+    ])
+
+    setInput('')
+    setSending(true)
+    setError(null)
+
+    try {
+      const result =
+        await sendAiMessage(
+          text,
+          history,
+        )
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: result.answer,
+          events: result.events,
+        },
+      ])
+    } catch (requestError) {
+      console.error(
+        'Evently AI failed:',
+        requestError,
+      )
+
+      setError(
+        '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043e\u0442\u0432\u0435\u0442. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437.',
+      )
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <main className="assistant-page">
+      <header className="assistant-header">
+        <div className="assistant-logo">
+          <Bot size={20} />
+        </div>
+
+        <div>
+          <strong>
+            Evently AI
+          </strong>
+          <span>
+            {'\u041f\u043e\u043c\u043e\u0449\u043d\u0438\u043a \u043f\u043e \u0434\u043e\u0441\u0443\u0433\u0443'}
+          </span>
+        </div>
+
+        <div className="assistant-online">
+          <span />
+          AI
+        </div>
+      </header>
+
+      <div className="assistant-body ai-chat-mode">
+        <div className="ai-chat-intro">
+          <div className="assistant-orb">
+            <Sparkles size={23} />
+          </div>
+
+          <div>
+            <strong>
+              {'\u041f\u043e\u0434\u0431\u0435\u0440\u0443 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435'}
+            </strong>
+            <span>
+              {'\u0418\u0437 \u0442\u043e\u0433\u043e, \u0447\u0442\u043e \u0443\u0436\u0435 \u0435\u0441\u0442\u044c \u0432 Evently'}
+            </span>
+          </div>
+        </div>
+
+        {messages.map(
+          (message) => (
+            <div
+              className={
+                message.role ===
+                'user'
+                  ? 'ai-message-row user'
+                  : 'ai-message-row assistant'
+              }
+              key={message.id}
+            >
+              {message.role ===
+                'assistant' && (
+                <div className="ai-message-avatar">
+                  <Sparkles size={14} />
+                </div>
+              )}
+
+              <div className="ai-message-stack">
+                <div className="ai-message-bubble">
+                  {message.content}
+                </div>
+
+                {message.events &&
+                  message.events.length >
+                    0 && (
+                  <div className="ai-event-list">
+                    {message.events.map(
+                      (event) => {
+                        const eventDate =
+                          formatAiEventDate(
+                            event.startsAt,
+                          )
+
+                        return (
+                          <button
+                            type="button"
+                            className="ai-event-card"
+                            key={event.id}
+                            disabled={!event.url}
+                            onClick={() => {
+                              if (
+                                event.url
+                              ) {
+                                window.open(
+                                  event.url,
+                                  '_blank',
+                                  'noopener,noreferrer',
+                                )
+                              }
+                            }}
+                          >
+                            {event.imageUrl ? (
+                              <img
+                                src={event.imageUrl}
+                                alt=""
+                              />
+                            ) : (
+                              <div className="ai-event-placeholder">
+                                <Ticket size={18} />
+                              </div>
+                            )}
+
+                            <div className="ai-event-copy">
+                              <strong>
+                                {event.title}
+                              </strong>
+
+                              <span>
+                                {[
+                                  eventDate,
+                                  event.venue,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </span>
+
+                              <small>
+                                {event.price}
+                              </small>
+                            </div>
+
+                            <ArrowRight size={16} />
+                          </button>
+                        )
+                      },
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          ),
+        )}
+
+        {sending && (
+          <div className="ai-message-row assistant">
+            <div className="ai-message-avatar">
+              <Sparkles size={14} />
+            </div>
+
+            <div className="ai-typing">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="ai-chat-error">
+            {error}
+          </div>
+        )}
+
+        {messages.length === 1 && (
+          <div className="assistant-suggestions">
+            {suggestions.map(
+              (suggestion) => (
+                <button
+                  type="button"
+                  key={suggestion}
+                  disabled={sending}
+                  onClick={() =>
+                    void submitMessage(
+                      suggestion,
+                    )
+                  }
+                >
+                  {suggestion}
+                </button>
+              ),
+            )}
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="assistant-composer">
+        <input
+          type="text"
+          value={input}
+          disabled={sending}
+          placeholder={
+            '\u0421\u043f\u0440\u043e\u0441\u0438 \u043e \u043c\u0435\u0441\u0442\u0430\u0445 \u0438 \u0441\u043e\u0431\u044b\u0442\u0438\u044f\u0445...'
+          }
+          onChange={(event) =>
+            setInput(
+              event.target.value,
+            )
+          }
+          onKeyDown={(event) => {
+            if (
+              event.key === 'Enter' &&
+              !event.shiftKey
+            ) {
+              event.preventDefault()
+              void submitMessage()
+            }
+          }}
+        />
+
+        <button
+          type="button"
+          aria-label={
+            '\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c'
+          }
+          disabled={
+            sending ||
+            !input.trim()
+          }
+          onClick={() =>
+            void submitMessage()
+          }
+        >
+          <Send size={19} />
+        </button>
+      </div>
+    </main>
+  )
+}
+
+function ProfilePage({
+  firstName,
+  preferredCategories,
+  categories,
+}: {
+  firstName: string | null
+  preferredCategories: string[]
+  categories: ApiCategory[]
+}) {
+  const selected =
+    categories.filter(
+      (category) =>
+        preferredCategories.includes(
+          category.slug,
+        ),
+    )
+
+  return (
+    <main className="profile-page">
+      <div className="profile-avatar">
+        <UserRound size={31} />
+      </div>
+
+      <h1>
+        {firstName ??
+          '\u0412\u0430\u0448 \u043f\u0440\u043e\u0444\u0438\u043b\u044c'}
+      </h1>
+
+      <p>
+        {'\u041f\u0440\u043e\u0444\u0438\u043b\u044c Evently \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a MAX'}
+      </p>
+
+      <section className="profile-card">
+        <span className="profile-card-label">
+          {'\u0412\u0430\u0448\u0438 \u0438\u043d\u0442\u0435\u0440\u0435\u0441\u044b'}
+        </span>
+
+        <div className="profile-interest-list">
+          {selected.length > 0 ? (
+            selected.map(
+              (category) => (
+                <span
+                  key={category.slug}
+                >
+                  {category.icon}
+                  {' '}
+                  {category.name}
+                </span>
+              ),
+            )
+          ) : (
+            <span>
+              {'\u0418\u043d\u0442\u0435\u0440\u0435\u0441\u044b \u0435\u0449\u0451 \u043d\u0435 \u0432\u044b\u0431\u0440\u0430\u043d\u044b'}
+            </span>
+          )}
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function BottomNav({
+  page,
+  onChange,
+}: {
+  page: AppPage
+  onChange:
+    (page: AppPage) => void
+}) {
+  const items = [
+    {
+      id: 'home' as const,
+      label: '\u0413\u043b\u0430\u0432\u043d\u0430\u044f',
+      icon: Home,
+    },
+    {
+      id: 'feed' as const,
+      label: '\u041b\u0435\u043d\u0442\u0430',
+      icon: Play,
+    },
+    {
+      id: 'assistant' as const,
+      label: '\u041f\u043e\u043c\u043e\u0449\u043d\u0438\u043a',
+      icon: Sparkles,
+    },
+    {
+      id: 'profile' as const,
+      label: '\u041f\u0440\u043e\u0444\u0438\u043b\u044c',
+      icon: UserRound,
+    },
+  ]
+
+  return (
+    <nav className="bottom-nav">
+      {items.map((item) => {
+        const Icon =
+          item.icon
+
+        const active =
+          page === item.id
+
+        return (
+          <button
+            type="button"
+            key={item.id}
+            className={
+              active
+                ? 'bottom-nav-item active'
+                : 'bottom-nav-item'
+            }
+            onClick={() =>
+              onChange(item.id)
+            }
+          >
+            <span className="bottom-nav-icon">
+              <Icon size={21} />
+            </span>
+
+            <small>
+              {item.label}
+            </small>
+          </button>
+        )
+      })}
+    </nav>
+  )
+}
+
+
+function App() {
+  const [
+    activePage,
+    setActivePage,
+  ] = useState<AppPage>('home')
+
+  const [events, setEvents] =
+    useState<ApiEvent[]>([])
+
+  const [categories, setCategories] =
+    useState<ApiCategory[]>([])
+  const [
+    preferredCategories,
+    setPreferredCategories,
+  ] = useState<string[]>([])
+
+  const [
+    activeCategory,
+    setActiveCategory,
+  ] = useState<string | null>(
+    null,
+  )
+
+  const [
+    feedLoading,
+    setFeedLoading,
+  ] = useState(false)
+
+  const [
+    categoriesOpen,
+    setCategoriesOpen,
+  ] = useState(false)
+
+  const [
+    nearbyActive,
+    setNearbyActive,
+  ] = useState(false)
+
+  const [
+    quickFilter,
+    setQuickFilter,
+  ] = useState<QuickFilter | null>(
+    null,
+  )
+
+  const [
+    locationError,
+    setLocationError,
+  ] = useState<string | null>(null)
+
+  const [
+    onboardingCompleted,
+    setOnboardingCompleted,
+  ] = useState<boolean | null>(null)
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [liked, setLiked] =
+    useState<
+      Record<string, boolean>
+    >({})
+
+  const [comments, setComments] =
+    useState<
+      Record<string, ApiComment[]>
+    >({})
+
+  const [
+    commentsEvent,
+    setCommentsEvent,
+  ] = useState<ApiEvent | null>(
+    null,
+  )
+
+  const [
+    commentText,
+    setCommentText,
+  ] = useState('')
+
+  const [
+    commentsLoading,
+    setCommentsLoading,
+  ] = useState(false)
+
+  const [
+    commentSending,
+    setCommentSending,
+  ] = useState(false)
+
+  const [
+    commentError,
+    setCommentError,
+  ] = useState<string | null>(
+    null,
+  )
+
+  const [
+    detailsEvent,
+    setDetailsEvent,
+  ] = useState<{
+    event: ApiEvent
+    position: number
+  } | null>(null)
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const [
+          profile,
+          categoryItems,
+        ] = await Promise.all([
+          getProfileInterests(),
+          getCategories(),
+        ])
+
+        setPreferredCategories(
+          profile.categories.map(
+            (category) =>
+              category.slug,
+          ),
+        )
+
+        setCategories(
+          categoryItems,
+        )
+
+        setOnboardingCompleted(
+          profile.onboardingCompleted,
+        )
+
+        if (
+          profile.onboardingCompleted
+        ) {
+          const feed =
+            await getEvents(20)
+
+          setEvents(feed.items)
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void initialize()
+  }, [])
+
+  async function completeOnboarding(
+    selected: string[],
+  ) {
+    await saveProfileInterests(
+      selected,
+    )
+
+    setOnboardingCompleted(true)
+
+    const feed =
+      await getEvents(20)
+
+    setEvents(feed.items)
+  }
+
+  async function switchCategory(
+    category: string | null,
+  ) {
+    setActivePage('feed')
+
+    if (
+      category === activeCategory &&
+      !nearbyActive &&
+      quickFilter === null
+    ) {
+      return
+    }
+
+    setNearbyActive(false)
+    setQuickFilter(null)
+    setLocationError(null)
+
+    setActiveCategory(category)
+    setFeedLoading(true)
+
+    try {
+      const feed =
+        await getEvents(
+          20,
+          category ??
+            undefined,
+        )
+
+      setEvents(feed.items)
+
+      // После смены категории
+      // возвращаем ленту наверх.
+      requestAnimationFrame(
+        () => {
+          document
+            .querySelector(
+              '.tiktok-feed',
+            )
+            ?.scrollTo({
+              top: 0,
+            })
+        },
+      )
+    } finally {
+      setFeedLoading(false)
+    }
+  }
+
+  async function openNearby() {
+    setActivePage('feed')
+    setQuickFilter(null)
+    setLocationError(null)
+
+    if (!navigator.geolocation) {
+      setLocationError(
+        '\u0413\u0435\u043e\u043b\u043e\u043a\u0430\u0446\u0438\u044f \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0432 \u044d\u0442\u043e\u043c \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435',
+      )
+
+      return
+    }
+
+    setFeedLoading(true)
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const {
+            latitude,
+            longitude,
+          } = position.coords
+
+          const feed =
+            await getEvents(
+              20,
+              undefined,
+              latitude,
+              longitude,
+            )
+
+          setActiveCategory(null)
+          setNearbyActive(true)
+          setEvents(feed.items)
+
+          requestAnimationFrame(
+            () => {
+              document
+                .querySelector(
+                  '.tiktok-feed',
+                )
+                ?.scrollTo({
+                  top: 0,
+                })
+            },
+          )
+        } catch {
+          setLocationError(
+            '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u0440\u044f\u0434\u043e\u043c',
+          )
+        } finally {
+          setFeedLoading(false)
+        }
+      },
+
+      () => {
+        setLocationError(
+          '\u0420\u0430\u0437\u0440\u0435\u0448\u0438 \u0434\u043e\u0441\u0442\u0443\u043f \u043a \u0433\u0435\u043e\u043f\u043e\u0437\u0438\u0446\u0438\u0438, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u0440\u044f\u0434\u043e\u043c',
+        )
+
+        setFeedLoading(false)
+      },
+
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      },
+    )
+  }
+
+  async function openQuickFilter(
+    filter: QuickFilter,
+  ) {
+    setActivePage('feed')
+    setNearbyActive(false)
+    setQuickFilter(filter)
+    setActiveCategory(null)
+    setLocationError(null)
+    setFeedLoading(true)
+
+    try {
+      const feed =
+        await getEvents(50)
+
+      const filtered =
+        feed.items.filter(
+          (event) =>
+            matchesQuickFilter(
+              event,
+              filter,
+            ),
+        )
+
+      setEvents(filtered)
+
+      requestAnimationFrame(
+        () => {
+          document
+            .querySelector(
+              '.tiktok-feed',
+            )
+            ?.scrollTo({
+              top: 0,
+            })
+        },
+      )
+    } finally {
+      setFeedLoading(false)
+    }
+  }
+
+  async function openComments(
+    event: ApiEvent,
+  ) {
+    setCommentsEvent(event)
+    setCommentsLoading(true)
+    setCommentError(null)
+
+    try {
+      const items =
+        await getComments(
+          event.id,
+        )
+
+      setComments(
+        (current) => ({
+          ...current,
+
+          [event.id]:
+            items,
+        }),
+      )
+    } catch {
+      setCommentError(
+        '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438',
+      )
+    } finally {
+      setCommentsLoading(false)
+    }
+  }
+
+  async function addComment() {
+    if (
+      !commentsEvent ||
+      commentSending
+    ) {
+      return
+    }
+
+    const text =
+      commentText.trim()
+
+    if (!text) {
+      return
+    }
+
+    const eventId =
+      commentsEvent.id
+
+    setCommentSending(true)
+    setCommentError(null)
+
+    try {
+      const comment =
+        await createComment(
+          eventId,
+          text,
+        )
+
+      setComments(
+        (current) => ({
+          ...current,
+
+          [eventId]: [
+            comment,
+            ...(current[eventId] ??
+              []),
+          ],
+        }),
+      )
+
+      setCommentText('')
+    } catch {
+      setCommentError(
+        '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439',
+      )
+    } finally {
+      setCommentSending(false)
+    }
+  }
+
+  function openDetails(
+    event: ApiEvent,
+    position: number,
+  ) {
+    setDetailsEvent({
+      event,
+      position,
+    })
+
+    void sendInteraction(
+      event.id,
+      'OPEN',
+      {
+        metadata: {
+          position,
+          feed: nearbyActive
+            ? 'nearby'
+            : activeCategory
+              ? 'category'
+              : 'for-you',
+        },
+      },
+    )
+  }
+
+  function openDetailsLink() {
+    if (!detailsEvent) {
+      return
+    }
+
+    const {
+      event,
+      position,
+    } = detailsEvent
+
+    const url =
+      event.ticketUrl ??
+      event.sourceUrl
+
+    if (!url) {
+      return
+    }
+
+    if (event.ticketUrl) {
+      void sendInteraction(
+        event.id,
+        'TICKET_CLICK',
+        {
+          metadata: {
+            position,
+            feed: nearbyActive
+              ? 'nearby'
+              : activeCategory
+                ? 'category'
+                : 'for-you',
+          },
+        },
+      )
+    }
+
+    window.open(
+      url,
+      '_blank',
+      'noopener,noreferrer',
+    )
+  }
+
+  async function shareEvent(
+    event: ApiEvent,
+    position: number,
+  ) {
+    const url =
+      event.ticketUrl ??
+      event.sourceUrl
+
+    const text = url
+      ? `${event.title}\n${url}`
+      : event.title
+
+    try {
+      if (
+        navigator.share &&
+        /Android|iPhone|iPad/i.test(
+          navigator.userAgent,
+        )
+      ) {
+        await navigator.share({
+          title: event.title,
+          text: event.title,
+          url: url ?? undefined,
+        })
+      } else if (
+        navigator.clipboard
+      ) {
+        await navigator.clipboard.writeText(
+          text,
+        )
+
+        window.alert(
+          '\u0421\u0441\u044b\u043b\u043a\u0430 \u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0430',
+        )
+      }
+
+      await sendInteraction(
+        event.id,
+        'SHARE',
+        {
+          metadata: {
+            position,
+            feed: nearbyActive
+              ? 'nearby'
+              : activeCategory
+                ? 'category'
+                : 'for-you',
+          },
+        },
+      )
+    } catch {
+      // Пользователь закрыл share sheet.
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-logo">
+          Evently
+        </div>
+
+        <div className="loading-text">
+          Готовим всё интересное…
+        </div>
+      </div>
+    )
+  }
+
+  if (
+    onboardingCompleted === false
+  ) {
+    return (
+      <Onboarding
+        categories={categories}
+        onComplete={
+          completeOnboarding
+        }
+      />
+    )
+  }
+
+  const orderedCategories =
+    [...categories].sort(
+      (a, b) => {
+        const aIndex =
+          preferredCategories.indexOf(
+            a.slug,
+          )
+
+        const bIndex =
+          preferredCategories.indexOf(
+            b.slug,
+          )
+
+        const aPreferred =
+          aIndex !== -1
+ 
+        const bPreferred =
+          bIndex !== -1
+
+        if (
+          aPreferred &&
+          !bPreferred
+        ) {
+          return -1
+        }
+
+        if (
+          !aPreferred &&
+          bPreferred
+        ) {
+          return 1
+        }
+
+        if (
+          aPreferred &&
+          bPreferred
+        ) {
+          return (
+            aIndex -
+            bIndex
+          )
+        }
+
+        return (
+          a.sortOrder -
+          b.sortOrder
+        )
+      },
+    )
+  const activeCategoryData =
+    categories.find(
+      (category) =>
+        category.slug ===
+        activeCategory,
+    )
+
+  const firstName =
+    getMaxFirstName()
+
+  return (
+    <div className="app has-bottom-nav">
+      {activePage === 'home' && (
+        <HomePage
+          firstName={firstName}
+          events={events}
+          categories={
+            orderedCategories
+          }
+          onOpenFeed={() =>
+            void switchCategory(null)
+          }
+          onNearby={() =>
+            void openNearby()
+          }
+          onQuickFilter={(filter) =>
+            void openQuickFilter(
+              filter,
+            )
+          }
+          onCategory={(category) =>
+            void switchCategory(
+              category,
+            )
+          }
+          onEvent={(
+            event,
+            position,
+          ) =>
+            openDetails(
+              event,
+              position,
+            )
+          }
+          onAssistant={() =>
+            setActivePage(
+              'assistant',
+            )
+          }
+        />
+      )}
+
+      {activePage === 'feed' && (
+        <>
+      <header className="feed-header">
+          <div className="feed-main-tabs">
+              <button
+              type="button"
+              className={
+                activeCategory === null &&
+                !nearbyActive &&
+                quickFilter === null
+                  ? 'feed-main-tab active'
+                  : 'feed-main-tab'
+              }
+              onClick={() =>
+                  void switchCategory(null)
+              }
+              >
+              Для вас
+              </button>
+  
+             <button
+               type="button"
+               className={
+                 nearbyActive
+                   ? 'feed-main-tab active'
+                   : 'feed-main-tab'
+               }
+               onClick={() =>
+                 void openNearby()
+               }
+             >
+               Рядом
+             </button>
+  
+              <button
+              type="button"
+              className={
+                  activeCategory
+                  ? 'feed-main-tab category-picker-button active'
+                  : 'feed-main-tab category-picker-button'
+              }
+              onClick={() =>
+                  setCategoriesOpen(true)
+              }
+              >
+              <span>
+                  {activeCategoryData
+                  ? activeCategoryData.name
+                  : 'Категории'}
+              </span>
+  
+              <ChevronDown
+                  size={15}
+              />
+              </button>
+          </div>
+          </header>
+  
+      {categoriesOpen && (
+        <CategorySheet
+          categories={
+            orderedCategories
+          }
+          preferredCategories={
+            preferredCategories
+          }
+          activeCategory={
+            activeCategory
+          }
+          onClose={() =>
+            setCategoriesOpen(false)
+          }
+          onSelect={(category) => {
+            setCategoriesOpen(false)
+  
+            void switchCategory(
+              category,
+            )
+          }}
+        />
+      )}
+  
+      {feedLoading && (
+        <div className="feed-switch-loader">
+          Подбираем…
+        </div>
+      )}
+  
+      {locationError && (
+        <div className="location-error">
+          {locationError}
+        </div>
+      )}
+  
+        <main className="tiktok-feed">
+          {events.length === 0 ? (
+            <div className="empty-feed">
+              <div className="empty-feed-icon">
+                {activeCategoryData?.icon ?? '?'}
+              </div>
+  
+              <h2>
+                Пока ничего нет
+              </h2>
+  
+              <p>
+                {activeCategoryData
+                  ? `В категории «${activeCategoryData.name}» пока нет событий`
+                  : 'Пока не нашли подходящих событий'}
+              </p>
+  
+              {activeCategory !== null && (
+                <button
+                  type="button"
+                  className="empty-feed-button"
+                  onClick={() =>
+                    void switchCategory(null)
+                  }
+                >
+                  Вернуться в «Для вас»
+                </button>
+              )}
+            </div>
+          ) : (
+            events.map(
+              (event, index) => {
+                const eventComments =
+                  comments[event.id] ?? []
+  
+                return (
+                  <EventSlide
+                    key={event.id}
+                    event={event}
+                    position={index}
+                    liked={Boolean(
+                      liked[event.id],
+                    )}
+                    commentsCount={
+                      eventComments.length
+                    }
+                    onLike={() => {
+                      const willBeLiked =
+                        !liked[event.id]
+  
+                      setLiked(
+                        (current) => ({
+                          ...current,
+                          [event.id]:
+                            willBeLiked,
+                        }),
+                      )
+  
+                      void sendInteraction(
+                        event.id,
+                        willBeLiked
+                          ? 'FAVORITE'
+                          : 'UNFAVORITE',
+                        {
+                          metadata: {
+                            position: index,
+                            feed: 'for-you',
+                          },
+                        },
+                      )
+                    }}
+                    onComments={() =>
+                      void openComments(
+                        event,
+                      )
+                    }
+                    onShare={() =>
+                      void shareEvent(
+                        event,
+                        index,
+                      )
+                    }
+                    onDetails={() =>
+                      openDetails(
+                        event,
+                        index,
+                      )
+                    }
+                  />
+                )
+              },
+            )
+          )}
+        </main>
+  
+          </>
+      )}
+
+      {activePage ===
+        'assistant' && (
+        <AssistantPage />
+      )}
+
+      {activePage ===
+        'profile' && (
+        <ProfilePage
+          firstName={firstName}
+          preferredCategories={
+            preferredCategories
+          }
+          categories={categories}
+        />
+      )}
+
+      {detailsEvent && (
+        <EventDetailsSheet
+          event={
+            detailsEvent.event
+          }
+          onClose={() =>
+            setDetailsEvent(null)
+          }
+          onTicket={() =>
+            openDetailsLink()
+          }
+        />
+      )}
+
+      {commentsEvent && (
+        <div className="comments-backdrop">
+            <div className="comments-sheet">
+            <div className="comments-header">
+                <strong>
+                {'\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438'}
+                </strong>
+
+                <button
+                type="button"
+                onClick={() => {
+                    setCommentsEvent(null)
+                    setCommentText('')
+                    setCommentError(null)
+                }}
+                >
+                <X size={24} />
+                </button>
+            </div>
+
+            <div className="comments-content">
+                {commentsLoading ? (
+                <div className="empty-comments">
+                    <MessageCircle size={36} />
+
+                    <strong>
+                    {'\u0417\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u043c\u2026'}
+                    </strong>
+                </div>
+                ) : (
+                <>
+                    {commentError && (
+                    <div className="empty-comments">
+                        <strong>
+                        {commentError}
+                        </strong>
+                    </div>
+                    )}
+
+                    {(comments[
+                    commentsEvent.id
+                    ] ?? []).length === 0 &&
+                    !commentError ? (
+                    <div className="empty-comments">
+                        <MessageCircle
+                        size={36}
+                        />
+
+                        <strong>
+                        {'\u041f\u043e\u043a\u0430 \u0442\u0438\u0445\u043e'}
+                        </strong>
+
+                        <span>
+                        {'\u0411\u0443\u0434\u044c \u043f\u0435\u0440\u0432\u044b\u043c, \u043a\u0442\u043e \u0447\u0442\u043e-\u043d\u0438\u0431\u0443\u0434\u044c \u043d\u0430\u043f\u0438\u0448\u0435\u0442'}
+                        </span>
+                    </div>
+                    ) : (
+                    !commentError &&
+                    (
+                        comments[
+                        commentsEvent.id
+                        ] ?? []
+                    ).map(
+                        (comment) => (
+                        <div
+                            className="comment"
+                            key={comment.id}
+                        >
+                            <div className="comment-avatar">
+                            {comment.author
+                                .slice(0, 1)
+                                .toUpperCase()}
+                            </div>
+
+                            <div>
+                            <strong>
+                                {comment.author}
+                            </strong>
+
+                            <p>
+                                {comment.text}
+                            </p>
+                            </div>
+                        </div>
+                        ),
+                    )
+                    )}
+                </>
+                )}
+            </div>
+
+            <div className="comment-form">
+                <input
+                value={commentText}
+                disabled={
+                    commentSending
+                }
+                onChange={(event) =>
+                    setCommentText(
+                    event.target.value,
+                    )
+                }
+                onKeyDown={(event) => {
+                    if (
+                    event.key ===
+                    'Enter'
+                    ) {
+                    void addComment()
+                    }
+                }}
+                placeholder={
+                    '\u041d\u0430\u043f\u0438\u0441\u0430\u0442\u044c \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439...'
+                }
+                />
+
+                <button
+                type="button"
+                disabled={
+                    commentSending ||
+                    !commentText.trim()
+                }
+                onClick={() =>
+                    void addComment()
+                }
+                >
+                <Send size={20} />
+                </button>
+            </div>
+            </div>
+        </div>
+        )}
+
+      <BottomNav
+        page={activePage}
+        onChange={setActivePage}
+      />
+    </div>
+  )
+}
+
+export default App

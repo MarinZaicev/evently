@@ -1,0 +1,1365 @@
+import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { prisma } from '@evently/db'
+
+const ChatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.string().trim().min(1).max(2000),
+})
+
+const ChatBodySchema = z.object({
+  message: z.string().trim().min(1).max(700),
+  history: z.array(ChatMessageSchema).max(10).default([]),
+})
+
+const ModelAnswerSchema = z.object({
+  eventIds: z.array(z.string()).min(1).max(4),
+})
+
+type UserIntent = {
+  freeOnly: boolean
+  budgetTotal: number | null
+  maxTicketPrice: number | null
+  partySize: number
+  explicitMoscow: boolean
+  evening: boolean
+  dateMode: 'today' | 'tomorrow' | 'weekend' | null
+  preferredCategories: string[]
+  explicitCategories: string[]
+}
+
+type OllamaResponse = {
+  message?: {
+    role?: string
+    content?: string
+  }
+  error?: string
+}
+
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  concert: [
+    'концерт',
+    'музыка',
+    'музык',
+    'послушать',
+    'живой звук',
+  ],
+
+  theatre: [
+    'театр',
+    'спектак',
+    'постановк',
+  ],
+
+  cinema: [
+    'кино',
+    'фильм',
+    'премьера',
+  ],
+
+  sport: [
+    'спорт',
+    'матч',
+    'футбол',
+    'хоккей',
+    'баскетбол',
+  ],
+
+  tour: [
+    'экскурс',
+    'прогулк',
+    'погулять',
+  ],
+
+  exhibition: [
+    'выстав',
+    'музей',
+    'искусств',
+    'экспозиц',
+  ],
+
+  party: [
+    'вечерин',
+    'тусов',
+    'потанцев',
+    'движ',
+    'клуб',
+  ],
+
+  standup: [
+    'стендап',
+    'standup',
+    'посмеяться',
+    'юмор',
+    'комед',
+  ],
+
+  games: [
+    'квест',
+    'игр',
+    'настол',
+  ],
+
+  food: [
+    'еда',
+    'ресторан',
+    'кафе',
+    'поесть',
+    'ужин',
+  ],
+
+  family: [
+    'дет',
+    'ребен',
+    'ребён',
+    'семь',
+  ],
+
+  education: [
+    'лекц',
+    'образован',
+    'мастер-класс',
+  ],
+}
+
+function normalizeText(value: string) {
+  return value
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+}
+
+function extractNumber(value: string) {
+  const digits = value.replace(/\D/g, '')
+
+  if (!digits) {
+    return null
+  }
+
+  const parsed = Number(digits)
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : null
+}
+
+function parseIntent(message: string): UserIntent {
+  const text = normalizeText(message)
+
+  let partySize = 1
+
+  if (/вдвоем|на двоих|для двоих/.test(text)) {
+    partySize = 2
+  } else if (/втроем|на троих|для троих/.test(text)) {
+    partySize = 3
+  } else if (/вчетвером|на четверых|для четверых/.test(text)) {
+    partySize = 4
+  }
+
+  const budgetMatch =
+    text.match(
+      /(?:до|максимум|не больше|не дороже|бюджет(?:ом)?(?:\s+до)?|в пределах)\s*([\d\s]{2,8})\s*(?:₽|руб)/,
+    ) ??
+    text.match(
+      /([\d\s]{2,8})\s*(?:₽|руб(?:лей|ля|ль)?)/,
+    )
+
+  const budgetTotal = budgetMatch
+    ? extractNumber(budgetMatch[1] ?? '')
+    : null
+
+  const pricePerPerson =
+    /на человека|с человека|за человека/.test(text)
+
+  const maxTicketPrice =
+    budgetTotal === null
+      ? null
+      : pricePerPerson || partySize === 1
+        ? budgetTotal
+        : Math.max(
+            1,
+            Math.floor(budgetTotal / partySize),
+          )
+
+  const preferredCategories =
+    new Set<string>()
+
+  const explicitCategories =
+    new Set<string>()
+
+  for (
+    const [slug, keywords]
+    of Object.entries(CATEGORY_KEYWORDS)
+  ) {
+    if (
+      keywords.some((keyword) =>
+        text.includes(keyword),
+      )
+    ) {
+      preferredCategories.add(slug)
+      explicitCategories.add(slug)
+    }
+  }
+
+  if (/свидан|романтич|вдвоем/.test(text)) {
+    ;[
+      'theatre',
+      'exhibition',
+      'concert',
+      'cinema',
+    ].forEach((slug) =>
+      preferredCategories.add(slug),
+    )
+  }
+
+  if (/с друзьями|компани/.test(text)) {
+    ;[
+      'party',
+      'games',
+      'standup',
+      'concert',
+    ].forEach((slug) =>
+      preferredCategories.add(slug),
+    )
+  }
+
+  if (/спокойн|не шумн|тихо/.test(text)) {
+    ;[
+      'exhibition',
+      'theatre',
+      'tour',
+    ].forEach((slug) =>
+      preferredCategories.add(slug),
+    )
+  }
+
+  let dateMode:
+    UserIntent['dateMode'] = null
+
+  if (text.includes('сегодня')) {
+    dateMode = 'today'
+  } else if (text.includes('завтра')) {
+    dateMode = 'tomorrow'
+  } else if (/выходн/.test(text)) {
+    dateMode = 'weekend'
+  }
+
+  return {
+    freeOnly:
+      /бесплат|свободный вход|вход свобод/.test(text),
+
+    budgetTotal,
+    maxTicketPrice,
+    partySize,
+
+    explicitMoscow:
+      /москв/.test(text),
+
+    evening:
+      /вечер|после работы|ночью|ночь/.test(text),
+
+    dateMode,
+
+    preferredCategories: [
+      ...preferredCategories,
+    ],
+
+    explicitCategories: [
+      ...explicitCategories,
+    ],
+  }
+}
+
+function moscowDateParts(date: Date) {
+  const parts =
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Moscow',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+
+  const get = (type: string) =>
+    parts.find(
+      (part) => part.type === type,
+    )?.value ?? ''
+
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+  }
+}
+
+function addCalendarDays(
+  value: {
+    year: number
+    month: number
+    day: number
+  },
+  amount: number,
+) {
+  const date = new Date(
+    Date.UTC(
+      value.year,
+      value.month - 1,
+      value.day + amount,
+      12,
+    ),
+  )
+
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+  }
+}
+
+function toMoscowBoundary(
+  value: {
+    year: number
+    month: number
+    day: number
+  },
+) {
+  const year =
+    String(value.year)
+
+  const month =
+    String(value.month).padStart(
+      2,
+      '0',
+    )
+
+  const day =
+    String(value.day).padStart(
+      2,
+      '0',
+    )
+
+  return new Date(
+    `${year}-${month}-${day}T00:00:00+03:00`,
+  )
+}
+
+function getDateWindow(
+  intent: UserIntent,
+  now: Date,
+) {
+  if (!intent.dateMode) {
+    return null
+  }
+
+  const today =
+    moscowDateParts(now)
+
+  if (intent.dateMode === 'today') {
+    return {
+      start: now,
+
+      end: toMoscowBoundary(
+        addCalendarDays(
+          today,
+          1,
+        ),
+      ),
+    }
+  }
+
+  if (
+    intent.dateMode ===
+    'tomorrow'
+  ) {
+    return {
+      start: toMoscowBoundary(
+        addCalendarDays(
+          today,
+          1,
+        ),
+      ),
+
+      end: toMoscowBoundary(
+        addCalendarDays(
+          today,
+          2,
+        ),
+      ),
+    }
+  }
+
+  const todayAtNoon =
+    new Date(
+      `${String(today.year).padStart(4, '0')}-${String(today.month).padStart(2, '0')}-${String(today.day).padStart(2, '0')}T12:00:00+03:00`,
+    )
+
+  const weekDay =
+    todayAtNoon.getUTCDay()
+
+  let daysUntilSaturday =
+    (6 - weekDay + 7) % 7
+
+  if (weekDay === 0) {
+    daysUntilSaturday = -1
+  }
+
+  const startDay =
+    addCalendarDays(
+      today,
+      daysUntilSaturday,
+    )
+
+  return {
+    start:
+      daysUntilSaturday < 0
+        ? now
+        : toMoscowBoundary(
+            startDay,
+          ),
+
+    end:
+      toMoscowBoundary(
+        addCalendarDays(
+          startDay,
+          2,
+        ),
+      ),
+  }
+}
+
+function getMoscowHour(
+  date: Date,
+) {
+  return Number(
+    new Intl.DateTimeFormat(
+      'en-US',
+      {
+        timeZone:
+          'Europe/Moscow',
+
+        hour:
+          '2-digit',
+
+        hourCycle:
+          'h23',
+      },
+    ).format(date),
+  )
+}
+
+function isEffectivelyFree(
+  event: {
+    isFree: boolean
+    priceMin: number | null
+    title: string
+    shortDescription:
+      string | null
+    description:
+      string | null
+  },
+) {
+  if (
+    event.isFree ||
+    event.priceMin === 0
+  ) {
+    return true
+  }
+
+  if (
+    event.priceMin !== null
+  ) {
+    return false
+  }
+
+  const text =
+    normalizeText(
+      [
+        event.title,
+        event.shortDescription ??
+          '',
+        event.description ??
+          '',
+      ].join(' '),
+    )
+
+  return /вход свобод|бесплатн/.test(
+    text,
+  )
+}
+
+function formatPrice(
+  event: {
+    isFree: boolean
+    priceMin: number | null
+    priceMax: number | null
+    currency: string
+    title: string
+    shortDescription:
+      string | null
+    description:
+      string | null
+  },
+) {
+  if (
+    isEffectivelyFree(event)
+  ) {
+    return 'Бесплатно'
+  }
+
+  const currency =
+    event.currency === 'RUB'
+      ? '₽'
+      : event.currency
+
+  if (
+    event.priceMin !== null &&
+    event.priceMax !== null &&
+    event.priceMin !==
+      event.priceMax
+  ) {
+    return `${event.priceMin}–${event.priceMax} ${currency}`
+  }
+
+  if (
+    event.priceMin !== null
+  ) {
+    return `от ${event.priceMin} ${currency}`
+  }
+
+  return 'Цена не указана'
+}
+
+function formatMoscowDate(
+  date: Date | null,
+) {
+  if (!date) {
+    return null
+  }
+
+  return new Intl.DateTimeFormat(
+    'ru-RU',
+    {
+      timeZone:
+        'Europe/Moscow',
+
+      weekday:
+        'short',
+
+      day:
+        'numeric',
+
+      month:
+        'short',
+
+      hour:
+        '2-digit',
+
+      minute:
+        '2-digit',
+    },
+  ).format(date)
+}
+
+function formatVariantCount(
+  count: number,
+) {
+  if (count === 1) {
+    return '1 вариант'
+  }
+
+  return `${count} варианта`
+}
+
+function buildAnswer(
+  selectedEvents: Array<{
+    title: string
+    price: string
+  }>,
+  intent: UserIntent,
+) {
+  if (
+    selectedEvents.length === 0
+  ) {
+    return 'Не нашёл подходящих вариантов в текущей афише Evently. Попробуй немного расширить условия.'
+  }
+
+  const count =
+    selectedEvents.length
+
+  let intro =
+    `Нашёл ${formatVariantCount(count)} из реальной афиши Evently.`
+
+  if (intent.freeOnly) {
+    intro =
+      count === 1
+        ? 'Нашёл 1 бесплатный вариант из афиши Evently.'
+        : `Нашёл ${count} бесплатных варианта из афиши Evently.`
+  } else if (
+    intent.budgetTotal !== null &&
+    intent.partySize > 1 &&
+    intent.maxTicketPrice !== null
+  ) {
+    intro =
+      `Нашёл ${formatVariantCount(count)}: ориентировался на билет до ${intent.maxTicketPrice} ₽, чтобы примерно уложиться в ${intent.budgetTotal} ₽ на ${
+        intent.partySize === 2
+          ? 'двоих'
+          : `${intent.partySize} человек`
+      }.`
+  } else if (
+    intent.maxTicketPrice !== null
+  ) {
+    intro =
+      `Нашёл ${formatVariantCount(count)} до ${intent.maxTicketPrice} ₽.`
+  }
+
+  const first =
+    selectedEvents[0]
+
+  if (!first) {
+    return intro
+  }
+
+  return `${intro} Первым посмотрел бы «${first.title}» — ${first.price}.`
+}
+
+export async function aiRoutes(
+  app: FastifyInstance,
+) {
+  app.post(
+    '/chat',
+
+    async (
+      request,
+      reply,
+    ) => {
+      const parsed =
+        ChatBodySchema.safeParse(
+          request.body,
+        )
+
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({
+            error:
+              'INVALID_AI_REQUEST',
+
+            details:
+              parsed.error.flatten(),
+          })
+      }
+
+      const now =
+        new Date()
+
+      const intent =
+        parseIntent(
+          parsed.data.message,
+        )
+
+      const dateWindow =
+        getDateWindow(
+          intent,
+          now,
+        )
+
+      const events =
+        await prisma.event.findMany({
+          where: {
+            status:
+              'ACTIVE',
+
+            OR: [
+              {
+                occurrences: {
+                  none: {},
+                },
+              },
+
+              {
+                occurrences: {
+                  some: {
+                    startsAt: {
+                      gte: now,
+                    },
+                  },
+                },
+              },
+            ],
+          },
+
+          orderBy: [
+            {
+              popularityScore:
+                'desc',
+            },
+
+            {
+              updatedAt:
+                'desc',
+            },
+          ],
+
+          take:
+            120,
+
+          include: {
+            venue: {
+              select: {
+                name: true,
+                address: true,
+                city: true,
+              },
+            },
+
+            occurrences: {
+              where: {
+                startsAt: {
+                  gte: now,
+                },
+              },
+
+              orderBy: {
+                startsAt:
+                  'asc',
+              },
+
+              take:
+                5,
+
+              select: {
+                startsAt: true,
+                endsAt: true,
+              },
+            },
+
+            images: {
+              orderBy: {
+                position:
+                  'asc',
+              },
+
+              take:
+                1,
+
+              select: {
+                url: true,
+              },
+            },
+
+            categories: {
+              include: {
+                category: {
+                  select: {
+                    slug: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+
+      if (
+        events.length === 0
+      ) {
+        return {
+          answer:
+            'Сейчас в Evently нет актуальных мероприятий. Попробуй немного позже.',
+
+          events: [],
+        }
+      }
+
+      const ranked =
+        events
+          .map((event) => {
+            let score =
+              Number(
+                event.popularityScore ??
+                  0,
+              ) * 0.05
+
+            const free =
+              isEffectivelyFree(
+                event,
+              )
+
+            const categorySlugs =
+              event.categories.map(
+                (item) =>
+                  item.category.slug,
+              )
+
+            const nextOccurrence =
+              event.occurrences[0] ??
+              null
+
+            /*
+             * Если пользователь ЯВНО сказал:
+             *
+             * "театр"
+             * "выставка"
+             * "кино"
+             *
+             * то события других категорий
+             * вообще не допускаем.
+             *
+             * А слова вроде "свидание" или
+             * "спокойно" остаются мягкими
+             * предпочтениями.
+             */
+            if (
+              intent
+                .explicitCategories
+                .length > 0 &&
+              !categorySlugs.some(
+                (slug) =>
+                  intent
+                    .explicitCategories
+                    .includes(slug),
+              )
+            ) {
+              return null
+            }
+
+            if (
+              intent.explicitMoscow &&
+              event.venue?.city &&
+              normalizeText(
+                event.venue.city,
+              ) !== 'москва'
+            ) {
+              return null
+            }
+
+            if (
+              intent.freeOnly
+            ) {
+              if (!free) {
+                return null
+              }
+
+              score += 12
+            }
+
+            if (
+              intent
+                .maxTicketPrice !==
+              null
+            ) {
+              if (free) {
+                score += 9
+              } else if (
+                event.priceMin !==
+                null
+              ) {
+                if (
+                  event.priceMin >
+                  intent
+                    .maxTicketPrice
+                ) {
+                  return null
+                }
+
+                score += 8
+
+                score +=
+                  Math.max(
+                    0,
+                    2 -
+                      event.priceMin /
+                        Math.max(
+                          intent
+                            .maxTicketPrice,
+                          1,
+                        ),
+                  )
+              } else {
+                return null
+              }
+            }
+
+            if (
+              intent
+                .preferredCategories
+                .length > 0
+            ) {
+              const matches =
+                categorySlugs.filter(
+                  (slug) =>
+                    intent
+                      .preferredCategories
+                      .includes(slug),
+                ).length
+
+              if (
+                matches > 0
+              ) {
+                score +=
+                  matches * 7
+              } else {
+                score -= 2
+              }
+            }
+
+            if (dateWindow) {
+              const matchingOccurrences =
+                event.occurrences.filter(
+                  (
+                    occurrence,
+                  ) =>
+                    occurrence
+                      .startsAt >=
+                      dateWindow.start &&
+                    occurrence
+                      .startsAt <
+                      dateWindow.end,
+                )
+
+              if (
+                matchingOccurrences
+                  .length === 0
+              ) {
+                return null
+              }
+
+              score += 10
+            }
+
+            if (
+              intent.evening
+            ) {
+              if (
+                !nextOccurrence
+              ) {
+                if (
+                  dateWindow
+                ) {
+                  return null
+                }
+              } else {
+                const hour =
+                  getMoscowHour(
+                    nextOccurrence
+                      .startsAt,
+                  )
+
+                if (
+                  hour >= 17 &&
+                  hour <= 23
+                ) {
+                  score += 5
+                } else if (
+                  dateWindow
+                ) {
+                  score -= 4
+                }
+              }
+            }
+
+            if (
+              event.venue?.city &&
+              normalizeText(
+                event.venue.city,
+              ) === 'москва'
+            ) {
+              score += 1
+            }
+
+            return {
+              event,
+              score,
+            }
+          })
+          .filter(
+            (
+              item,
+            ): item is NonNullable<
+              typeof item
+            > =>
+              Boolean(item),
+          )
+          .sort(
+            (a, b) =>
+              b.score -
+              a.score,
+          )
+
+      const candidates =
+        ranked.slice(0, 15)
+
+      if (
+        candidates.length === 0
+      ) {
+        return {
+          answer:
+            'По этим условиям в текущей афише Evently ничего не нашлось. Попробуй увеличить бюджет, выбрать другой день или убрать одно из ограничений.',
+
+          events: [],
+        }
+      }
+
+      const modelContext =
+        candidates.map(
+          ({ event }) => ({
+            id:
+              event.id,
+
+            title:
+              event.title,
+
+            categories:
+              event.categories.map(
+                (item) =>
+                  item.category
+                    .name,
+              ),
+
+            price:
+              formatPrice(
+                event,
+              ),
+
+            venue:
+              event.venue
+                ?.name ??
+              null,
+
+            city:
+              event.venue
+                ?.city ??
+              null,
+
+            nextDate:
+              formatMoscowDate(
+                event
+                  .occurrences[0]
+                  ?.startsAt ??
+                  null,
+              ),
+
+            description:
+              (
+                event
+                  .shortDescription ??
+                event
+                  .description ??
+                ''
+              ).slice(
+                0,
+                220,
+              ),
+          }),
+        )
+
+      const historyText =
+        parsed.data.history
+          .slice(-4)
+          .map(
+            (message) =>
+              `${
+                message.role ===
+                'user'
+                  ? 'Пользователь'
+                  : 'Evently'
+              }: ${message.content}`,
+          )
+          .join('\n')
+
+      const ollamaUrl =
+        (
+          process.env
+            .OLLAMA_BASE_URL ??
+          'http://127.0.0.1:11434'
+        ).replace(
+          /\/$/,
+          '',
+        )
+
+      const ollamaModel =
+        process.env
+          .OLLAMA_MODEL ??
+        'qwen3:1.7b'
+
+      const responseSchema = {
+        type:
+          'object',
+
+        additionalProperties:
+          false,
+
+        properties: {
+          eventIds: {
+            type:
+              'array',
+
+            minItems:
+              1,
+
+            maxItems:
+              4,
+
+            items: {
+              type:
+                'string',
+            },
+          },
+        },
+
+        required: [
+          'eventIds',
+        ],
+      }
+
+      let selectedIds:
+        string[] = []
+
+      try {
+        const ollamaResponse =
+          await fetch(
+            `${ollamaUrl}/api/chat`,
+
+            {
+              method:
+                'POST',
+
+              headers: {
+                'Content-Type':
+                  'application/json',
+              },
+
+              signal:
+                AbortSignal.timeout(
+                  70_000,
+                ),
+
+              body:
+                JSON.stringify({
+                  model:
+                    ollamaModel,
+
+                  stream:
+                    false,
+
+                  think:
+                    false,
+
+                  keep_alive:
+                    '5m',
+
+                  format:
+                    responseSchema,
+
+                  options: {
+                    temperature:
+                      0,
+
+                    num_predict:
+                      160,
+
+                    num_ctx:
+                      4096,
+                  },
+
+                  messages: [
+                    {
+                      role:
+                        'system',
+
+                      content: [
+                        '/no_think',
+
+                        'Ты ранжировщик мероприятий Evently.',
+
+                        'У тебя нет права придумывать события.',
+
+                        'Выбери от 1 до 4 самых подходящих eventIds ТОЛЬКО из списка кандидатов.',
+
+                        'Учитывай смысл запроса: настроение, компанию, категорию и описание.',
+
+                        'Цены, даты и площадки уже отфильтрованы сервером — не пытайся их изменять.',
+
+                        'Не придумывай новые id.',
+
+                        'Верни только JSON по заданной схеме.',
+                      ].join(' '),
+                    },
+
+                    {
+                      role:
+                        'user',
+
+                      content: [
+                        historyText
+                          ? `Контекст диалога:\n${historyText}`
+                          : '',
+
+                        `Запрос:\n${parsed.data.message}`,
+
+                        `Кандидаты:\n${JSON.stringify(modelContext)}`,
+                      ]
+                        .filter(
+                          Boolean,
+                        )
+                        .join(
+                          '\n\n',
+                        ),
+                    },
+                  ],
+                }),
+            },
+          )
+
+        if (
+          !ollamaResponse.ok
+        ) {
+          const body =
+            await ollamaResponse.text()
+
+          throw new Error(
+            `OLLAMA_HTTP_${ollamaResponse.status}:${body.slice(0, 500)}`,
+          )
+        }
+
+        const body =
+          await ollamaResponse.json() as OllamaResponse
+
+        const content =
+          body.message?.content
+
+        if (!content) {
+          throw new Error(
+            `OLLAMA_EMPTY_RESPONSE:${body.error ?? 'unknown'}`,
+          )
+        }
+
+        const modelAnswer =
+          ModelAnswerSchema.parse(
+            JSON.parse(
+              content,
+            ),
+          )
+
+        const allowedIds =
+          new Set(
+            candidates.map(
+              ({ event }) =>
+                event.id,
+            ),
+          )
+
+        selectedIds =
+          modelAnswer.eventIds.filter(
+            (id) =>
+              allowedIds.has(
+                id,
+              ),
+          )
+      } catch (error) {
+        request.log.warn(
+          {
+            error,
+          },
+
+          'Ollama ranking failed, using deterministic fallback',
+        )
+      }
+
+      if (
+        selectedIds.length === 0
+      ) {
+        selectedIds =
+          candidates
+            .slice(0, 3)
+            .map(
+              ({ event }) =>
+                event.id,
+            )
+      }
+
+      const eventById =
+        new Map(
+          candidates.map(
+            ({ event }) =>
+              [
+                event.id,
+                event,
+              ] as const,
+          ),
+        )
+
+      const selectedEvents =
+        selectedIds
+          .map((id) =>
+            eventById.get(id),
+          )
+          .filter(
+            (
+              event,
+            ): event is NonNullable<
+              typeof event
+            > =>
+              Boolean(event),
+          )
+          .map(
+            (event) => ({
+              id:
+                event.id,
+
+              title:
+                event.title,
+
+              imageUrl:
+                event.images[0]
+                  ?.url ??
+                null,
+
+              venue:
+                event.venue
+                  ?.name ??
+                null,
+
+              address:
+                event.venue
+                  ?.address ??
+                null,
+
+              price:
+                formatPrice(
+                  event,
+                ),
+
+              startsAt:
+                event
+                  .occurrences[0]
+                  ?.startsAt
+                  .toISOString() ??
+                null,
+
+              url:
+                event.ticketUrl ??
+                event.sourceUrl,
+            }),
+          )
+
+      return {
+        answer:
+          buildAnswer(
+            selectedEvents.map(
+              (event) => ({
+                title:
+                  event.title,
+
+                price:
+                  event.price,
+              }),
+            ),
+
+            intent,
+          ),
+
+        events:
+          selectedEvents,
+      }
+    },
+  )
+}

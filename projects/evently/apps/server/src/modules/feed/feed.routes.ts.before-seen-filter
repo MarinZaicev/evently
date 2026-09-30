@@ -1,0 +1,605 @@
+import type { FastifyInstance } from 'fastify'
+import type {
+  ApiEvent,
+  ApiEventsResponse,
+} from '@evently/shared'
+
+import { z } from 'zod'
+
+import { prisma } from '@evently/db'
+
+import { getInteractionWeight } from './feed.scoring.js'
+
+const FeedQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .default(20),
+
+  category: z
+    .string()
+    .min(1)
+    .optional(),
+
+  city: z
+    .string()
+    .min(1)
+    .max(32)
+    .optional(),
+
+  latitude: z.coerce
+    .number()
+    .min(-90)
+    .max(90)
+    .optional(),
+
+  longitude: z.coerce
+    .number()
+    .min(-180)
+    .max(180)
+    .optional(),
+})
+
+const eventInclude = {
+  venue: true,
+
+  movie: true,
+
+  occurrences: {
+    orderBy: {
+      startsAt: 'asc' as const,
+    },
+  },
+
+  images: {
+    orderBy: {
+      position: 'asc' as const,
+    },
+  },
+
+  categories: {
+    include: {
+      category: true,
+    },
+  },
+}
+
+function toApiEvent(event: any): ApiEvent {
+  return {
+    id: event.id,
+
+    title: event.title,
+    shortDescription: event.shortDescription,
+    description: event.description,
+
+    priceMin: event.priceMin,
+    priceMax: event.priceMax,
+    currency: event.currency,
+    isFree: event.isFree,
+
+    ageRating: event.ageRating,
+
+    ticketUrl: event.ticketUrl,
+    sourceUrl: event.sourceUrl,
+
+    venue: event.venue
+      ? {
+          id: event.venue.id,
+          name: event.venue.name,
+          address: event.venue.address,
+          city: event.venue.city,
+          latitude: event.venue.latitude,
+          longitude: event.venue.longitude,
+        }
+      : null,
+
+    occurrences: event.occurrences.map(
+      (occurrence: any) => ({
+        id: occurrence.id,
+
+        startsAt:
+          occurrence.startsAt.toISOString(),
+
+        endsAt: occurrence.endsAt
+          ? occurrence.endsAt.toISOString()
+          : null,
+
+        ticketUrl:
+          occurrence.ticketUrl,
+      }),
+    ),
+
+    images: event.images.map(
+      (image: any) => ({
+        id: image.id,
+        url: image.url,
+        position: image.position,
+      }),
+    ),
+
+    categories: event.categories.map(
+      (item: any) => ({
+        id: item.category.id,
+        slug: item.category.slug,
+        name: item.category.name,
+        icon: item.category.icon,
+      }),
+    ),
+
+    movie: event.movie
+      ? {
+          tmdbId:
+            event.movie.tmdbId,
+
+          mediaType:
+            event.movie.mediaType,
+
+          title:
+            event.movie.title,
+
+          originalTitle:
+            event.movie.originalTitle,
+
+          releaseYear:
+            event.movie.releaseYear,
+
+          overview:
+            event.movie.overview,
+
+          posterUrl:
+            event.movie.posterUrl,
+
+          backdropUrl:
+            event.movie.backdropUrl,
+
+          trailerEmbedUrl:
+            event.movie.trailerEmbedUrl,
+
+          trailerUrl:
+            event.movie.trailerUrl,
+
+          trailerKey:
+            event.movie.trailerKey,
+
+          voteAverage:
+            event.movie.voteAverage,
+
+          runtime:
+            event.movie.runtime,
+
+          ageRating:
+            event.movie.ageRating,
+
+          genres:
+            Array.isArray(
+              event.movie.genres,
+            )
+              ? event.movie.genres
+              : [],
+        }
+      : null,
+
+  }
+}
+
+function distanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+) {
+  const earthRadiusKm = 6371
+
+  const toRadians = (
+    value: number,
+  ) => value * Math.PI / 180
+
+  const dLat =
+    toRadians(lat2 - lat1)
+
+  const dLon =
+    toRadians(lon2 - lon1)
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLon / 2) ** 2
+
+  return (
+    earthRadiusKm *
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a),
+    )
+  )
+}
+
+export async function feedRoutes(
+  app: FastifyInstance,
+) {
+  app.get('/', async (request, reply) => {
+    const parsed =
+      FeedQuerySchema.safeParse(
+        request.query,
+      )
+
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'INVALID_QUERY',
+        details:
+          parsed.error.flatten(),
+      })
+    }
+
+    const {
+      limit,
+      category,
+      city,
+      latitude,
+      longitude,
+    } = parsed.data
+
+    const clientId =
+      request.headers[
+        'x-evently-client-id'
+      ]
+
+    let user:
+      | {
+          id: string
+
+          interests: Array<{
+            weight: number
+
+            category: {
+              slug: string
+            }
+          }>
+        }
+      | null = null
+
+    if (
+      typeof clientId === 'string' &&
+      clientId.length >= 8
+    ) {
+      user =
+        await prisma.user.findUnique({
+          where: {
+            maxUserId:
+              `web:${clientId}`,
+          },
+
+          select: {
+            id: true,
+
+            interests: {
+              select: {
+                weight: true,
+
+                category: {
+                  select: {
+                    slug: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+    }
+    const interactions = user
+      ? await prisma.interaction.findMany({
+          where: {
+            userId: user.id,
+          },
+
+          orderBy: {
+            createdAt: 'desc',
+          },
+
+          take: 500,
+
+          include: {
+            event: {
+              include: {
+                categories: {
+                  include: {
+                    category: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      : []
+
+    const behaviorScores =
+      new Map<string, number>()
+
+    const onboardingScores =
+      new Map<string, number>()
+
+    // Strong cold-start signal from onboarding.
+    for (
+      const interest
+      of user?.interests ?? []
+    ) {
+      onboardingScores.set(
+        interest.category.slug,
+        12,
+      )
+    }
+
+    const impressedEventIds =
+      new Set<string>()
+
+    const hiddenEventIds =
+      new Set<string>()
+
+    for (
+      const interaction
+      of interactions
+    ) {
+      if (
+        interaction.type ===
+        'IMPRESSION'
+      ) {
+        impressedEventIds.add(
+          interaction.eventId,
+        )
+      }
+
+      if (
+        interaction.type === 'HIDE'
+      ) {
+        hiddenEventIds.add(
+          interaction.eventId,
+        )
+      }
+
+      const weight =
+        getInteractionWeight(
+          interaction,
+        )
+
+      if (weight === 0) {
+        continue
+      }
+
+      for (
+        const item
+        of interaction.event.categories
+      ) {
+        const slug =
+          item.category.slug
+
+        const current =
+          behaviorScores.get(slug) ??
+          0
+
+        behaviorScores.set(
+          slug,
+          current + weight,
+        )
+      }
+    }
+
+    const events =
+      await prisma.event.findMany({
+        where: {
+          status: 'ACTIVE',
+
+          images: {
+            some: {},
+          },
+
+          ...(city
+            ? {
+                sourceCity: city,
+              }
+            : {}),
+
+          ...(category
+            ? {
+                categories: {
+                  some: {
+                    category: {
+                      slug: category,
+                    },
+                  },
+                },
+              }
+            : {}),
+
+          ...(hiddenEventIds.size > 0
+            ? {
+                id: {
+                  notIn: [
+                    ...hiddenEventIds,
+                  ],
+                },
+              }
+            : {}),
+        },
+
+        include: eventInclude,
+      })
+
+    const now = new Date()
+
+    const currentEvents =
+      events.filter((event) => {
+        if (
+          event.occurrences.length === 0
+        ) {
+          return true
+        }
+
+        return event.occurrences.some(
+          (occurrence) => {
+            const startsAt =
+              occurrence.startsAt
+
+            const endsAt =
+              occurrence.endsAt
+
+            // Событие без конкретной даты
+            // считаем постоянным / актуальным.
+            if (
+              !startsAt &&
+              !endsAt
+            ) {
+              return true
+            }
+
+            // Если есть дата окончания,
+            // событие актуально до неё.
+            if (endsAt) {
+              return endsAt >= now
+            }
+
+            // Если окончания нет,
+            // будущий старт означает,
+            // что событие ещё актуально.
+            if (startsAt) {
+              return startsAt >= now
+            }
+
+            return true
+          },
+        )
+      })
+
+    const scoredEvents =
+      currentEvents.map((event) => {
+        const categoryAffinities: number[] =
+          event.categories.map(
+            (item): number => {
+              const slug =
+                item.category.slug
+
+              const behavior =
+                behaviorScores.get(
+                  slug,
+                ) ?? 0
+
+              const cappedBehavior =
+                Math.max(
+                  -8,
+                  Math.min(
+                    8,
+                    behavior,
+                  ),
+                )
+
+              const onboarding =
+                onboardingScores.get(
+                  slug,
+                ) ?? 0
+
+              return (
+                onboarding +
+                cappedBehavior
+              )
+            },
+          )
+
+        let score: number =
+          categoryAffinities.length > 0
+            ? Math.max(
+                ...categoryAffinities,
+              )
+            : 0
+
+        // Учитываем общую популярность.
+        score +=
+          event.popularityScore *
+          0.1
+
+        // Небольшой бонус ещё не показанным событиям.
+        if (
+          !impressedEventIds.has(
+            event.id,
+          )
+        ) {
+          score += 0.75
+        }
+
+        const distance: number | null =
+          latitude !== undefined &&
+          longitude !== undefined &&
+          event.venue?.latitude !== null &&
+          event.venue?.latitude !== undefined &&
+          event.venue?.longitude !== null &&
+          event.venue?.longitude !== undefined
+            ? distanceKm(
+                latitude,
+                longitude,
+                event.venue.latitude,
+                event.venue.longitude,
+              )
+            : null
+
+        return {
+          event,
+          score,
+          distance,
+        }
+      })
+
+    const nearbyMode =
+      latitude !== undefined &&
+      longitude !== undefined
+
+    const visibleEvents =
+      nearbyMode
+        ? scoredEvents.filter(
+            (item) =>
+              item.distance !== null &&
+              item.distance <= 50,
+          )
+        : scoredEvents
+
+    visibleEvents.sort(
+      (a, b) => {
+        if (
+          nearbyMode &&
+          a.distance !== null &&
+          b.distance !== null
+        ) {
+          if (a.distance !== b.distance) {
+            return (
+              a.distance -
+              b.distance
+            )
+          }
+        }
+
+        if (b.score !== a.score) {
+          return b.score - a.score
+        }
+
+        return (
+          b.event.createdAt.getTime() -
+          a.event.createdAt.getTime()
+        )
+      },
+    )
+
+    const response:
+      ApiEventsResponse = {
+        items: visibleEvents
+          .slice(0, limit)
+          .map(({ event }) =>
+            toApiEvent(event),
+          ),
+
+        nextCursor: null,
+      }
+
+    return response
+  })
+}

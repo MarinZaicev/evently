@@ -1,0 +1,476 @@
+import {
+  CalendarDays,
+  Film,
+  Heart,
+  MapPin,
+  MessageCircle,
+  Play,
+  Share2,
+  Star,
+  Ticket,
+} from 'lucide-react'
+
+import type {
+  ApiEvent,
+} from '../lib/api'
+
+import {
+  useEventView,
+} from '../hooks/useEventView'
+
+type Props = {
+  event: ApiEvent
+  position: number
+
+  liked: boolean
+  commentsCount: number
+
+  onLike: () => void
+  onComments: () => void
+  onShare: () => void
+  onDetails: () => void
+}
+
+function formatDate(
+  event: ApiEvent,
+) {
+  const occurrence =
+    event.occurrences[0]
+
+  if (!occurrence) {
+    return 'В любое время'
+  }
+
+  return new Intl.DateTimeFormat(
+    'ru-RU',
+    {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    },
+  ).format(
+    new Date(
+      occurrence.startsAt,
+    ),
+  )
+}
+
+function formatPrice(
+  event: ApiEvent,
+) {
+  if (event.isFree) {
+    return 'Бесплатно'
+  }
+
+  if (event.priceMin !== null) {
+    return `от ${event.priceMin.toLocaleString(
+      'ru-RU',
+    )} ₽`
+  }
+
+  return 'Цена уточняется'
+}
+
+function formatRuntime(
+  runtime: number | null,
+) {
+  if (
+    runtime === null ||
+    runtime <= 0
+  ) {
+    return null
+  }
+
+  const hours =
+    Math.floor(
+      runtime / 60,
+    )
+
+  const minutes =
+    runtime % 60
+
+  if (hours === 0) {
+    return `${minutes} мин`
+  }
+
+  if (minutes === 0) {
+    return `${hours} ч`
+  }
+
+  return `${hours} ч ${minutes} мин`
+}
+
+function getGenreNames(
+  genres: unknown[],
+) {
+  return genres
+    .flatMap((genre) => {
+      if (
+        typeof genre === 'string'
+      ) {
+        return [genre]
+      }
+
+      if (
+        genre &&
+        typeof genre === 'object' &&
+        'name' in genre &&
+        typeof (
+          genre as {
+            name?: unknown
+          }
+        ).name === 'string'
+      ) {
+        return [
+          (
+            genre as {
+              name: string
+            }
+          ).name,
+        ]
+      }
+
+      return []
+    })
+    .slice(0, 3)
+}
+
+export function EventSlide({
+  event,
+  position,
+  liked,
+  commentsCount,
+  onLike,
+  onComments,
+  onShare,
+  onDetails,
+}: Props) {
+  const slideRef =
+    useEventView(
+      event.id,
+      position,
+    )
+
+  const image =
+    event.images[0]?.url ??
+    'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+
+  const movie =
+    event.movie
+
+  const movieImage =
+    movie?.backdropUrl ??
+    movie?.posterUrl ??
+    image
+
+  const moviePoster =
+    movie?.posterUrl ??
+    movie?.backdropUrl ??
+    image
+
+  const runtime =
+    movie
+      ? formatRuntime(
+          movie.runtime,
+        )
+      : null
+
+  const genres =
+    movie
+      ? getGenreNames(
+          movie.genres,
+        )
+      : []
+
+  function openTrailer() {
+    if (!movie) {
+      return
+    }
+
+    const url =
+      movie.trailerUrl ??
+      movie.trailerEmbedUrl
+
+    if (!url) {
+      return
+    }
+
+    window.open(
+      url,
+      '_blank',
+      'noopener,noreferrer',
+    )
+  }
+
+  return (
+    <section
+      ref={slideRef}
+      className="event-slide"
+    >
+      <div
+        className={
+          movie
+            ? 'event-horizontal-track has-movie'
+            : 'event-horizontal-track'
+        }
+      >
+        <div className="event-horizontal-page">
+          <img
+            className="slide-image"
+            src={image}
+            alt=""
+          />
+
+          <div className="slide-overlay" />
+          <div className="slide-gradient" />
+
+          <div className="event-info">
+            <div className="category-list">
+              {event.categories
+                .slice(0, 2)
+                .map((category) => (
+                  <span
+                    key={category.id}
+                    className="category-pill"
+                  >
+                    {category.icon}{' '}
+                    {category.name}
+                  </span>
+                ))}
+            </div>
+
+            <h1 className="event-name">
+              {event.title}
+            </h1>
+
+            <div className="event-details">
+              <div>
+                <CalendarDays
+                  size={17}
+                />
+
+                <span>
+                  {formatDate(event)}
+                </span>
+              </div>
+
+              {event.venue && (
+                <div>
+                  <MapPin size={17} />
+
+                  <span>
+                    {event.venue.name}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {event.shortDescription && (
+              <p className="event-description">
+                {event.shortDescription}
+              </p>
+            )}
+
+            <div className="bottom-actions">
+              <div className="price">
+                {formatPrice(event)}
+              </div>
+
+              <button
+                type="button"
+                className="ticket-button"
+                onClick={onDetails}
+              >
+                <Ticket size={19} />
+
+                Подробнее
+              </button>
+            </div>
+          </div>
+
+          {movie && (
+            <div className="movie-swipe-hint">
+              <Film size={15} />
+
+              <span>
+                Свайп влево — о фильме
+              </span>
+
+              <span className="movie-swipe-arrow">
+                →
+              </span>
+            </div>
+          )}
+        </div>
+
+        {movie && (
+          <div className="event-horizontal-page movie-page">
+            <img
+              className="movie-backdrop"
+              src={movieImage}
+              alt=""
+            />
+
+            <div className="movie-backdrop-blur" />
+            <div className="movie-page-gradient" />
+
+            <div className="movie-content">
+              <div className="movie-label">
+                <Film size={15} />
+
+                Фильм
+              </div>
+
+              <div className="movie-main">
+                <img
+                  className="movie-poster"
+                  src={moviePoster}
+                  alt=""
+                />
+
+                <div className="movie-meta">
+                  <h2>
+                    {movie.title ??
+                      event.title}
+                  </h2>
+
+                  <div className="movie-stats">
+                    {movie.releaseYear && (
+                      <span>
+                        {movie.releaseYear}
+                      </span>
+                    )}
+
+                    {runtime && (
+                      <span>
+                        {runtime}
+                      </span>
+                    )}
+
+                    {movie.ageRating && (
+                      <span>
+                        {movie.ageRating}
+                      </span>
+                    )}
+
+                    {movie.voteAverage !==
+                      null && (
+                      <span className="movie-rating">
+                        <Star
+                          size={14}
+                          fill="currentColor"
+                        />
+
+                        {movie.voteAverage.toFixed(
+                          1,
+                        )}
+                      </span>
+                    )}
+                  </div>
+
+                  {genres.length > 0 && (
+                    <div className="movie-genres">
+                      {genres.map(
+                        (genre) => (
+                          <span
+                            key={genre}
+                          >
+                            {genre}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {movie.overview && (
+                <p className="movie-overview">
+                  {movie.overview}
+                </p>
+              )}
+
+              {(movie.trailerUrl ||
+                movie.trailerEmbedUrl) && (
+                <button
+                  type="button"
+                  className="movie-trailer-button"
+                  onClick={openTrailer}
+                >
+                  <Play
+                    size={19}
+                    fill="currentColor"
+                  />
+
+                  Смотреть трейлер
+                </button>
+              )}
+
+              <div className="movie-return-hint">
+                ← Свайп вправо — к событию
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <aside className="social-actions">
+        <button
+          type="button"
+          className={
+            liked
+              ? 'social-button liked'
+              : 'social-button'
+          }
+          onClick={onLike}
+        >
+          <span className="social-icon">
+            <Heart
+              size={29}
+              fill={
+                liked
+                  ? 'currentColor'
+                  : 'none'
+              }
+            />
+          </span>
+
+          <small>
+            {liked ? 1 : 0}
+          </small>
+        </button>
+
+        <button
+          type="button"
+          className="social-button"
+          onClick={onComments}
+        >
+          <span className="social-icon">
+            <MessageCircle
+              size={29}
+            />
+          </span>
+
+          <small>
+            {commentsCount}
+          </small>
+        </button>
+
+        <button
+          type="button"
+          className="social-button"
+          onClick={onShare}
+        >
+          <span className="social-icon">
+            <Share2 size={29} />
+          </span>
+
+          <small>
+            Поделиться
+          </small>
+        </button>
+      </aside>
+    </section>
+  )
+}

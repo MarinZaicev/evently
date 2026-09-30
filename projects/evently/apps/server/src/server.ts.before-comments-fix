@@ -1,0 +1,77 @@
+import 'dotenv/config'
+
+import Fastify from 'fastify'
+import cors from '@fastify/cors'
+
+import { categoriesRoutes } from './modules/categories/categories.routes.js'
+import { importRoutes } from './modules/import/import.routes.js'
+import { eventsRoutes } from './modules/events/events.routes.js'
+import { interactionsRoutes } from './modules/interactions/interactions.routes.js'
+import { feedRoutes } from './modules/feed/feed.routes.js'
+import { feedDebugRoutes } from './modules/feed/feed-debug.routes.js'
+import { interestsRoutes } from './modules/profile/interests.routes.js'
+import { commentsRoutes } from './modules/comments/comments.routes.js'
+
+const app = Fastify({
+  logger: true,
+})
+
+await app.register(interactionsRoutes, {
+  prefix: '/api/interactions',
+})
+
+await app.register(feedRoutes, {
+  prefix: '/api/feed',
+})
+
+await app.register(feedDebugRoutes, {
+  prefix: '/api/feed/debug',
+})
+
+await app.register(interestsRoutes, {
+  prefix: '/api/profile/interests',
+})
+
+await app.register(cors, {
+  origin: true,
+})
+
+app.get('/health', async () => {
+  return {
+    status: 'ok',
+    service: 'evently-api',
+    timestamp: new Date().toISOString(),
+  }
+})
+
+await app.register(categoriesRoutes, {
+  prefix: '/api/categories',
+})
+
+await app.register(eventsRoutes, {
+  prefix: '/api/events',
+})
+
+await app.register(importRoutes, {
+  prefix: '/internal/events/import',
+})
+
+const port = Number(process.env.PORT ?? 3000)
+const host = process.env.HOST ?? '0.0.0.0'
+
+try {
+  await app.listen({
+    port,
+    host,
+  })
+
+  app.log.info(`Evently API started on ${host}:${port}`)
+} catch (error) {
+  app.log.error(error)
+  process.exit(1)
+}
+
+
+await app.register(commentsRoutes, {
+  prefix: '/api/comments',
+})

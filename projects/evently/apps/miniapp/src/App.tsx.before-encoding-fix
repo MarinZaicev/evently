@@ -1,0 +1,639 @@
+import {
+  useEffect,
+  useState,
+} from 'react'
+
+import {
+  ChevronDown,
+  MessageCircle,
+  Send,
+  X,
+} from 'lucide-react'
+
+import {
+  getEvents,
+  type ApiEvent,
+} from './lib/api'
+
+import {
+  sendInteraction,
+} from './lib/interactions'
+
+import {
+  getCategories,
+  getProfileInterests,
+  saveProfileInterests,
+  type ApiCategory,
+} from './lib/profile'
+
+import {
+  EventSlide,
+} from './components/EventSlide'
+
+import {
+  Onboarding,
+} from './components/Onboarding'
+
+import {
+  CategorySheet,
+} from './components/CategorySheet'
+
+type Comment = {
+  id: string
+  text: string
+}
+
+function App() {
+  const [events, setEvents] =
+    useState<ApiEvent[]>([])
+
+  const [categories, setCategories] =
+    useState<ApiCategory[]>([])
+  const [
+    preferredCategories,
+    setPreferredCategories,
+  ] = useState<string[]>([])
+
+  const [
+    activeCategory,
+    setActiveCategory,
+  ] = useState<string | null>(
+    null,
+  )
+
+  const [
+    feedLoading,
+    setFeedLoading,
+  ] = useState(false)
+
+  const [
+    categoriesOpen,
+    setCategoriesOpen,
+  ] = useState(false)
+
+  const [
+    onboardingCompleted,
+    setOnboardingCompleted,
+  ] = useState<boolean | null>(null)
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [liked, setLiked] =
+    useState<
+      Record<string, boolean>
+    >({})
+
+  const [comments, setComments] =
+    useState<
+      Record<string, Comment[]>
+    >({})
+
+  const [
+    commentsEvent,
+    setCommentsEvent,
+  ] = useState<ApiEvent | null>(
+    null,
+  )
+
+  const [
+    commentText,
+    setCommentText,
+  ] = useState('')
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const [
+          profile,
+          categoryItems,
+        ] = await Promise.all([
+          getProfileInterests(),
+          getCategories(),
+        ])
+
+        setPreferredCategories(
+          profile.categories.map(
+            (category) =>
+              category.slug,
+          ),
+        )
+
+        setCategories(
+          categoryItems,
+        )
+
+        setOnboardingCompleted(
+          profile.onboardingCompleted,
+        )
+
+        if (
+          profile.onboardingCompleted
+        ) {
+          const feed =
+            await getEvents(20)
+
+          setEvents(feed.items)
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void initialize()
+  }, [])
+
+  async function completeOnboarding(
+    selected: string[],
+  ) {
+    await saveProfileInterests(
+      selected,
+    )
+
+    setOnboardingCompleted(true)
+
+    const feed =
+      await getEvents(20)
+
+    setEvents(feed.items)
+  }
+
+  async function switchCategory(
+    category: string | null,
+  ) {
+    if (
+      category ===
+      activeCategory
+    ) {
+     return
+    }
+
+    setActiveCategory(category)
+    setFeedLoading(true)
+
+    try {
+      const feed =
+        await getEvents(
+          20,
+          category ??
+            undefined,
+        )
+
+      setEvents(feed.items)
+
+      // После смены категории
+      // возвращаем ленту наверх.
+      requestAnimationFrame(
+        () => {
+          document
+            .querySelector(
+              '.tiktok-feed',
+            )
+            ?.scrollTo({
+              top: 0,
+            })
+        },
+      )
+    } finally {
+      setFeedLoading(false)
+    }
+  }
+
+  function addComment() {
+    if (!commentsEvent) {
+      return
+    }
+
+    const text =
+      commentText.trim()
+
+    if (!text) {
+      return
+    }
+
+    const eventId =
+      commentsEvent.id
+
+    setComments((current) => ({
+      ...current,
+
+      [eventId]: [
+        ...(current[eventId] ??
+          []),
+
+        {
+          id: crypto.randomUUID(),
+          text,
+        },
+      ],
+    }))
+
+    setCommentText('')
+  }
+
+  async function shareEvent(
+    event: ApiEvent,
+    position: number,
+  ) {
+    const url =
+      event.sourceUrl ?? ''
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: event.title,
+          text: event.title,
+          url:
+            url || undefined,
+        })
+      } else if (
+        navigator.clipboard
+      ) {
+        await navigator.clipboard.writeText(
+          url || event.title,
+        )
+      }
+
+      await sendInteraction(
+        event.id,
+        'SHARE',
+        {
+          metadata: {
+            position,
+            feed: 'for-you',
+          },
+        },
+      )
+    } catch {
+      // Share sheet закрыт.
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-logo">
+          Evently
+        </div>
+
+        <div className="loading-text">
+          Готовим всё интересное…
+        </div>
+      </div>
+    )
+  }
+
+  if (
+    onboardingCompleted === false
+  ) {
+    return (
+      <Onboarding
+        categories={categories}
+        onComplete={
+          completeOnboarding
+        }
+      />
+    )
+  }
+
+  const orderedCategories =
+    [...categories].sort(
+      (a, b) => {
+        const aIndex =
+          preferredCategories.indexOf(
+            a.slug,
+          )
+
+        const bIndex =
+          preferredCategories.indexOf(
+            b.slug,
+          )
+
+        const aPreferred =
+          aIndex !== -1
+ 
+        const bPreferred =
+          bIndex !== -1
+
+        if (
+          aPreferred &&
+          !bPreferred
+        ) {
+          return -1
+        }
+
+        if (
+          !aPreferred &&
+          bPreferred
+        ) {
+          return 1
+        }
+
+        if (
+          aPreferred &&
+          bPreferred
+        ) {
+          return (
+            aIndex -
+            bIndex
+          )
+        }
+
+        return (
+          a.sortOrder -
+          b.sortOrder
+        )
+      },
+    )
+  const activeCategoryData =
+    categories.find(
+      (category) =>
+        category.slug ===
+        activeCategory,
+    )
+
+  return (
+    <div className="app">
+      <header className="feed-header">
+        <div className="feed-main-tabs">
+            <button
+            type="button"
+            className={
+                activeCategory === null
+                ? 'feed-main-tab active'
+                : 'feed-main-tab'
+            }
+            onClick={() =>
+                void switchCategory(null)
+            }
+            >
+            Для вас
+            </button>
+
+            <button
+            type="button"
+            className="feed-main-tab"
+            >
+            Рядом
+            </button>
+
+            <button
+            type="button"
+            className={
+                activeCategory
+                ? 'feed-main-tab category-picker-button active'
+                : 'feed-main-tab category-picker-button'
+            }
+            onClick={() =>
+                setCategoriesOpen(true)
+            }
+            >
+            <span>
+                {activeCategoryData
+                ? activeCategoryData.name
+                : 'Категории'}
+            </span>
+
+            <ChevronDown
+                size={15}
+            />
+            </button>
+        </div>
+        </header>
+
+    {categoriesOpen && (
+      <CategorySheet
+        categories={
+          orderedCategories
+        }
+        preferredCategories={
+          preferredCategories
+        }
+        activeCategory={
+          activeCategory
+        }
+        onClose={() =>
+          setCategoriesOpen(false)
+        }
+        onSelect={(category) => {
+          setCategoriesOpen(false)
+
+          void switchCategory(
+            category,
+          )
+        }}
+      />
+    )}
+
+    {feedLoading && (
+      <div className="feed-switch-loader">
+        Подбираем…
+      </div>
+    )}
+
+      <main className="tiktok-feed">
+        {events.length === 0 ? (
+          <div className="empty-feed">
+            <div className="empty-feed-icon">
+              {activeCategoryData?.icon ?? '?'}
+            </div>
+
+            <h2>
+              ���� ������ ���
+            </h2>
+
+            <p>
+              {activeCategoryData
+                ? `� ��������� �${activeCategoryData.name}� ���� ��� �������`
+                : '���� �� ����� ���������� �������'}
+            </p>
+
+            {activeCategory !== null && (
+              <button
+                type="button"
+                className="empty-feed-button"
+                onClick={() =>
+                  void switchCategory(null)
+                }
+              >
+                ��������� � ���� ���
+              </button>
+            )}
+          </div>
+        ) : (
+          events.map(
+            (event, index) => {
+              const eventComments =
+                comments[event.id] ?? []
+
+              return (
+                <EventSlide
+                  key={event.id}
+                  event={event}
+                  position={index}
+                  liked={Boolean(
+                    liked[event.id],
+                  )}
+                  commentsCount={
+                    eventComments.length
+                  }
+                  onLike={() => {
+                    const willBeLiked =
+                      !liked[event.id]
+
+                    setLiked(
+                      (current) => ({
+                        ...current,
+                        [event.id]:
+                          willBeLiked,
+                      }),
+                    )
+
+                    void sendInteraction(
+                      event.id,
+                      willBeLiked
+                        ? 'FAVORITE'
+                        : 'UNFAVORITE',
+                      {
+                        metadata: {
+                          position: index,
+                          feed: 'for-you',
+                        },
+                      },
+                    )
+                  }}
+                  onComments={() =>
+                    setCommentsEvent(
+                      event,
+                    )
+                  }
+                  onShare={() =>
+                    void shareEvent(
+                      event,
+                      index,
+                    )
+                  }
+                />
+              )
+            },
+          )
+        )}
+      </main>
+
+      {commentsEvent && (
+        <div className="comments-backdrop">
+          <div className="comments-sheet">
+            <div className="comments-header">
+              <strong>
+                Комментарии
+              </strong>
+
+              <button
+                onClick={() =>
+                  setCommentsEvent(
+                    null,
+                  )
+                }
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="comments-content">
+              {(comments[
+                commentsEvent.id
+              ] ?? []).length ===
+              0 ? (
+                <div className="empty-comments">
+                  <MessageCircle
+                    size={36}
+                  />
+
+                  <strong>
+                    Пока тихо
+                  </strong>
+
+                  <span>
+                    Будь первым,
+                    кто что-нибудь
+                    напишет
+                  </span>
+                </div>
+              ) : (
+                (
+                  comments[
+                    commentsEvent.id
+                  ] ?? []
+                ).map(
+                  (comment) => (
+                    <div
+                      className="comment"
+                      key={
+                        comment.id
+                      }
+                    >
+                      <div className="comment-avatar">
+                        U
+                      </div>
+
+                      <div>
+                        <strong>
+                          Пользователь
+                        </strong>
+
+                        <p>
+                          {
+                            comment.text
+                          }
+                        </p>
+                      </div>
+                    </div>
+                  ),
+                )
+              )}
+            </div>
+
+            <div className="comment-form">
+              <input
+                value={
+                  commentText
+                }
+                onChange={(
+                  event,
+                ) =>
+                  setCommentText(
+                    event.target
+                      .value,
+                  )
+                }
+                onKeyDown={(
+                  event,
+                ) => {
+                  if (
+                    event.key ===
+                    'Enter'
+                  ) {
+                    addComment()
+                  }
+                }}
+                placeholder="Написать комментарий..."
+              />
+
+              <button
+                onClick={
+                  addComment
+                }
+              >
+                <Send
+                  size={20}
+                />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App
