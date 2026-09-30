@@ -1,0 +1,212 @@
+schema_version: "1.0"
+
+solution:
+  name: "Evently"
+  description: "MAX Mini App для поиска и персональных рекомендаций мероприятий"
+
+api:
+  base_url: "https://thoroughly-advise-nav-jack.trycloudflare.com"
+  openapi_file: "openapi.yaml"
+
+checks:
+
+  - id: health
+    name: "Проверка доступности Evently API"
+    required: true
+
+    request:
+      method: GET
+      path: /health
+
+      query: {}
+      headers: {}
+      body: null
+
+    role: anonymous
+
+    expected:
+      status_codes:
+        - 200
+
+      content_type: application/json
+
+      response:
+        type: object
+        required_fields:
+          - status
+          - service
+          - timestamp
+
+        fields:
+          status:
+            type: string
+            expected_value: ok
+
+          service:
+            type: string
+            expected_value: evently-api
+
+          timestamp:
+            type: string
+            format: date-time
+
+
+  - id: feed_moscow
+    name: "Получение ленты мероприятий Москвы"
+    required: true
+
+    request:
+      method: GET
+      path: /api/feed/
+
+      query:
+        limit: 2
+        city: msk
+
+      headers:
+        Accept: application/json
+
+      body: null
+
+    role: anonymous
+
+    expected:
+      status_codes:
+        - 200
+
+      content_type: application/json
+
+      response:
+        type: object
+        required_fields:
+          - items
+
+        fields:
+          items:
+            type: array
+            min_items: 1
+
+        item_required_fields:
+          - id
+          - title
+
+
+  - id: feed_novosibirsk
+    name: "Получение ленты мероприятий Новосибирска"
+    required: true
+
+    request:
+      method: GET
+      path: /api/feed/
+
+      query:
+        limit: 2
+        city: nsk
+
+      headers:
+        Accept: application/json
+
+      body: null
+
+    role: anonymous
+
+    expected:
+      status_codes:
+        - 200
+
+      content_type: application/json
+
+      response:
+        type: object
+        required_fields:
+          - items
+
+        fields:
+          items:
+            type: array
+            min_items: 1
+
+        item_required_fields:
+          - id
+          - title
+
+
+  - id: feed_city_filter
+    name: "Проверка фильтрации ленты по городу"
+    required: true
+
+    request:
+      method: GET
+      path: /api/feed/
+
+      query:
+        limit: 20
+        city: THIS_CITY_DOES_NOT_EXIST
+
+      headers:
+        Accept: application/json
+
+      body: null
+
+    role: anonymous
+
+    expected:
+      status_codes:
+        - 200
+
+      content_type: application/json
+
+      response:
+        type: object
+        required_fields:
+          - items
+
+        fields:
+          items:
+            type: array
+            expected_length: 0
+
+
+  - id: categories
+    name: "Получение категорий мероприятий"
+    required: true
+
+    request:
+      method: GET
+      path: /api/categories/
+
+      query: {}
+
+      headers:
+        Accept: application/json
+
+      body: null
+
+    role: anonymous
+
+    expected:
+      status_codes:
+        - 200
+
+      content_type: application/json
+
+      response:
+        description: "Ответ должен содержать набор доступных категорий Evently"
+
+
+notes:
+  test_data: |
+    Локальный Docker demo автоматически создаёт 12 синтетических
+    мероприятий для Москвы (msk) и Новосибирска (nsk).
+
+  authentication: |
+    Для перечисленных обязательных проверок авторизация не требуется.
+
+  production_data: |
+    Рабочее окружение Evently использует отдельный parser pipeline.
+    В техническом Docker demo используются синтетические данные
+    для воспроизводимой проверки.
+
+  local_api: |
+    При локальном Docker-запуске API доступен по адресу:
+    http://localhost:13000
