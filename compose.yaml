@@ -1,0 +1,67 @@
+name: evently-submission
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-evently}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-evently_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-evently}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-evently} -d ${POSTGRES_DB:-evently}"
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+    restart: unless-stopped
+
+
+  evently:
+    build:
+      context: ./projects/evently
+      dockerfile: Dockerfile
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-evently}:${POSTGRES_PASSWORD:-evently_dev_password}@postgres:5432/${POSTGRES_DB:-evently}
+
+      HOST: 0.0.0.0
+      PORT: 3000
+
+      EVENTLY_DEFAULT_CITY: ${EVENTLY_DEFAULT_CITY:-msk}
+
+      PARSER_OUTPUT_ROOT: /data/parser-output
+      PARSER_SYNC_INTERVAL_MS: ${PARSER_SYNC_INTERVAL_MS:-60000}
+      PARSER_STALE_AFTER_HOURS: ${PARSER_STALE_AFTER_HOURS:-7}
+
+      IMPORT_API_KEY: ${IMPORT_API_KEY:-docker-demo-import-key}
+
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+
+    volumes:
+      - ./docker-test-data/parser-output:/data/parser-output:ro
+
+    ports:
+      - "${EVENTLY_API_PORT:-13000}:3000"
+      - "${EVENTLY_WEB_PORT:-15173}:5173"
+
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:

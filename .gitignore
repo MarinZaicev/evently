@@ -140,3 +140,6 @@ Thumbs.db
 
 .vscode/
 **/.vscode/
+
+# Docker CLI config / credentials
+/.docker/
